@@ -1635,7 +1635,7 @@ async def analyze_silence(file: UploadFile = File(...)):
         - has_silence: 是否检测到可移除静音
     """
     from utils.audio_silence_remover import (
-        detect_silence, convert_to_wav_if_needed, format_duration_mmss, CancelledError
+        detect_silence, convert_to_wav_if_needed, format_duration_mmss
     )
 
     try:
