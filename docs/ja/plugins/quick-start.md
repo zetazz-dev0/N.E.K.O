@@ -43,8 +43,8 @@ supported = ">=0.1.0,<0.3.0"
 ## ステップ 3: `__init__.py` の作成
 
 ```python
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import neko_plugin, plugin_entry
+from plugin.sdk.plugin import NekoPluginBase
+from plugin.sdk.plugin import neko_plugin, plugin_entry
 from typing import Any
 
 @neko_plugin

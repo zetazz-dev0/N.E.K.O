@@ -9,8 +9,8 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any, Optional
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import (
+from plugin.sdk.plugin import NekoPluginBase
+from plugin.sdk.plugin import (
     neko_plugin, plugin_entry, lifecycle, timer_interval
 )
 
@@ -82,8 +82,8 @@ class FileProcessorPlugin(NekoPluginBase):
 import asyncio
 import aiohttp
 from typing import Any, Optional, Dict
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import neko_plugin, plugin_entry, lifecycle
+from plugin.sdk.plugin import NekoPluginBase
+from plugin.sdk.plugin import neko_plugin, plugin_entry, lifecycle
 
 @neko_plugin
 class APIClientPlugin(NekoPluginBase):
@@ -167,8 +167,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Dict
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import (
+from plugin.sdk.plugin import NekoPluginBase
+from plugin.sdk.plugin import (
     neko_plugin, plugin_entry, lifecycle, timer_interval
 )
 

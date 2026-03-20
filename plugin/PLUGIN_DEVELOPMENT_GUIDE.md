@@ -117,8 +117,8 @@ conflicts = ["<0.1.0", ">=0.4.0"]
 #### 步骤 3：创建插件代码 `__init__.py`
 
 ```python
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import neko_plugin, plugin_entry
+from plugin.sdk.plugin import NekoPluginBase
+from plugin.sdk.plugin import neko_plugin, plugin_entry
 from typing import Any
 
 @neko_plugin
@@ -326,7 +326,7 @@ def push_message(
 标记一个类为 N.E.K.O 插件。
 
 ```python
-from plugin.sdk.decorators import neko_plugin
+from plugin.sdk.plugin import neko_plugin
 
 @neko_plugin
 class MyPlugin(NekoPluginBase):
@@ -345,7 +345,7 @@ class MyPlugin(NekoPluginBase):
 #### 4.2.1 基本用法
 
 ```python
-from plugin.sdk.decorators import plugin_entry
+from plugin.sdk.plugin import plugin_entry
 
 @plugin_entry(
     id="my_function",
@@ -492,7 +492,7 @@ async def async_example(self, url: str, **_):
 #### 4.3.1 startup - 启动事件
 
 ```python
-from plugin.sdk.decorators import lifecycle
+from plugin.sdk.plugin import lifecycle
 
 @lifecycle(
     id="startup",
@@ -558,7 +558,7 @@ def reload(self, **_):
 定义定时任务，按固定间隔执行。
 
 ```python
-from plugin.sdk.decorators import timer_interval
+from plugin.sdk.plugin import timer_interval
 
 @timer_interval(
     id="periodic_task",
@@ -598,7 +598,7 @@ def periodic_task(self, **_):
 定义消息事件处理器（用于处理来自主系统的消息）。
 
 ```python
-from plugin.sdk.decorators import message
+from plugin.sdk.plugin import message
 
 @message(
     id="handle_chat",
@@ -640,7 +640,7 @@ def handle_chat(self, text: str, sender: str, timestamp: str, **_):
 通用事件装饰器，可以定义自定义事件类型。
 
 ```python
-from plugin.sdk.decorators import on_event
+from plugin.sdk.plugin import on_event
 
 @on_event(
     event_type="custom_event",    # 自定义事件类型
@@ -841,8 +841,8 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any, Optional
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import (
+from plugin.sdk.plugin import NekoPluginBase
+from plugin.sdk.plugin import (
     neko_plugin,
     plugin_entry,
     lifecycle,
@@ -1063,8 +1063,8 @@ Web API 客户端插件示例
 import asyncio
 import aiohttp
 from typing import Any, Optional, Dict
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import neko_plugin, plugin_entry, lifecycle
+from plugin.sdk.plugin import NekoPluginBase
+from plugin.sdk.plugin import neko_plugin, plugin_entry, lifecycle
 
 @neko_plugin
 class APIClientPlugin(NekoPluginBase):
@@ -1296,8 +1296,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Dict
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import (
+from plugin.sdk.plugin import NekoPluginBase
+from plugin.sdk.plugin import (
     neko_plugin,
     plugin_entry,
     lifecycle,

@@ -5,7 +5,7 @@
 All plugins must inherit from `NekoPluginBase`.
 
 ```python
-from plugin.sdk.base import NekoPluginBase
+from plugin.sdk.plugin import NekoPluginBase
 
 class MyPlugin(NekoPluginBase):
     def __init__(self, ctx):

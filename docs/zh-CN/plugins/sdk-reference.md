@@ -5,7 +5,7 @@
 所有插件必须继承 `NekoPluginBase`。
 
 ```python
-from plugin.sdk.base import NekoPluginBase
+from plugin.sdk.plugin import NekoPluginBase
 
 class MyPlugin(NekoPluginBase):
     def __init__(self, ctx):

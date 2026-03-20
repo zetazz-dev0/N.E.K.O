@@ -1,13 +1,13 @@
 # Decorators
 
-All decorators are imported from `plugin.sdk.decorators`.
+All decorators are imported from `plugin.sdk.plugin`.
 
 ## @neko_plugin
 
 Marks a class as a N.E.K.O. plugin. Required on all plugin classes.
 
 ```python
-from plugin.sdk.decorators import neko_plugin
+from plugin.sdk.plugin import neko_plugin
 
 @neko_plugin
 class MyPlugin(NekoPluginBase):
@@ -19,7 +19,7 @@ class MyPlugin(NekoPluginBase):
 Defines an externally callable entry point.
 
 ```python
-from plugin.sdk.decorators import plugin_entry
+from plugin.sdk.plugin import plugin_entry
 
 @plugin_entry(
     id="process",                # Entry point ID (required)
@@ -55,7 +55,7 @@ Always include `**_` in your function signature to capture unused parameters gra
 Defines lifecycle event handlers.
 
 ```python
-from plugin.sdk.decorators import lifecycle
+from plugin.sdk.plugin import lifecycle
 
 @lifecycle(id="startup")
 def on_startup(self, **_):
@@ -80,7 +80,7 @@ Valid lifecycle IDs: `startup`, `shutdown`, `reload`.
 Defines a scheduled task that executes at fixed intervals.
 
 ```python
-from plugin.sdk.decorators import timer_interval
+from plugin.sdk.plugin import timer_interval
 
 @timer_interval(
     id="cleanup",
@@ -102,7 +102,7 @@ Timer tasks run in separate threads. Exceptions are logged but don't stop the ti
 Defines a handler for messages from the main system.
 
 ```python
-from plugin.sdk.decorators import message
+from plugin.sdk.plugin import message
 
 @message(
     id="handle_chat",
@@ -118,7 +118,7 @@ def handle_chat(self, text: str, sender: str, **_):
 Generic event handler for custom event types.
 
 ```python
-from plugin.sdk.decorators import on_event
+from plugin.sdk.plugin import on_event
 
 @on_event(
     event_type="custom_event",

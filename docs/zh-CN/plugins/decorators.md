@@ -1,13 +1,13 @@
 # 装饰器
 
-所有装饰器均从 `plugin.sdk.decorators` 导入。
+所有装饰器均从 `plugin.sdk.plugin` 导入。
 
 ## @neko_plugin
 
 将类标记为 N.E.K.O. 插件。所有插件类都必须使用此装饰器。
 
 ```python
-from plugin.sdk.decorators import neko_plugin
+from plugin.sdk.plugin import neko_plugin
 
 @neko_plugin
 class MyPlugin(NekoPluginBase):
@@ -19,7 +19,7 @@ class MyPlugin(NekoPluginBase):
 定义一个可外部调用的入口点。
 
 ```python
-from plugin.sdk.decorators import plugin_entry
+from plugin.sdk.plugin import plugin_entry
 
 @plugin_entry(
     id="process",                # 入口点 ID（必需）
@@ -55,7 +55,7 @@ def process(self, data: str, **_):
 定义生命周期事件处理器。
 
 ```python
-from plugin.sdk.decorators import lifecycle
+from plugin.sdk.plugin import lifecycle
 
 @lifecycle(id="startup")
 def on_startup(self, **_):
@@ -80,7 +80,7 @@ def on_reload(self, **_):
 定义按固定间隔执行的定时任务。
 
 ```python
-from plugin.sdk.decorators import timer_interval
+from plugin.sdk.plugin import timer_interval
 
 @timer_interval(
     id="cleanup",
@@ -102,7 +102,7 @@ def cleanup(self, **_):
 定义处理来自主系统消息的处理器。
 
 ```python
-from plugin.sdk.decorators import message
+from plugin.sdk.plugin import message
 
 @message(
     id="handle_chat",
@@ -118,7 +118,7 @@ def handle_chat(self, text: str, sender: str, **_):
 通用事件处理器，用于自定义事件类型。
 
 ```python
-from plugin.sdk.decorators import on_event
+from plugin.sdk.plugin import on_event
 
 @on_event(
     event_type="custom_event",

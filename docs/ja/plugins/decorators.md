@@ -1,13 +1,13 @@
 # デコレーター
 
-すべてのデコレーターは `plugin.sdk.decorators` からインポートします。
+すべてのデコレーターは `plugin.sdk.plugin` からインポートします。
 
 ## @neko_plugin
 
 クラスを N.E.K.O. プラグインとしてマークします。すべてのプラグインクラスに必須です。
 
 ```python
-from plugin.sdk.decorators import neko_plugin
+from plugin.sdk.plugin import neko_plugin
 
 @neko_plugin
 class MyPlugin(NekoPluginBase):
@@ -19,7 +19,7 @@ class MyPlugin(NekoPluginBase):
 外部から呼び出し可能なエントリーポイントを定義します。
 
 ```python
-from plugin.sdk.decorators import plugin_entry
+from plugin.sdk.plugin import plugin_entry
 
 @plugin_entry(
     id="process",                # エントリーポイント ID（必須）
@@ -55,7 +55,7 @@ def process(self, data: str, **_):
 ライフサイクルイベントハンドラーを定義します。
 
 ```python
-from plugin.sdk.decorators import lifecycle
+from plugin.sdk.plugin import lifecycle
 
 @lifecycle(id="startup")
 def on_startup(self, **_):
@@ -80,7 +80,7 @@ def on_reload(self, **_):
 固定間隔で実行されるスケジュールタスクを定義します。
 
 ```python
-from plugin.sdk.decorators import timer_interval
+from plugin.sdk.plugin import timer_interval
 
 @timer_interval(
     id="cleanup",
@@ -102,7 +102,7 @@ def cleanup(self, **_):
 メインシステムからのメッセージハンドラーを定義します。
 
 ```python
-from plugin.sdk.decorators import message
+from plugin.sdk.plugin import message
 
 @message(
     id="handle_chat",
@@ -118,7 +118,7 @@ def handle_chat(self, text: str, sender: str, **_):
 カスタムイベントタイプの汎用イベントハンドラーです。
 
 ```python
-from plugin.sdk.decorators import on_event
+from plugin.sdk.plugin import on_event
 
 @on_event(
     event_type="custom_event",

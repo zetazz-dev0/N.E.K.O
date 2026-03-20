@@ -5,7 +5,7 @@
 すべてのプラグインは `NekoPluginBase` を継承する必要があります。
 
 ```python
-from plugin.sdk.base import NekoPluginBase
+from plugin.sdk.plugin import NekoPluginBase
 
 class MyPlugin(NekoPluginBase):
     def __init__(self, ctx):
