@@ -82,6 +82,7 @@ class Live2DManager {
         this.onStatusUpdate = null;
         this.modelName = null; // 记录当前模型目录名
         this.modelRootPath = null; // 记录当前模型根路径，如 /static/<modelName>
+        this.modelGeneration = null; // 2 或 3，null 表示未知
         this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用
         this._shouldApplySavedParams = false; // 是否应该应用保存的参数
         this._savedParamsTimer = null; // 保存参数应用的定时器
@@ -122,8 +123,96 @@ class Live2DManager {
 
         // 记录已确认不存在的 expression 文件，避免重复 404 请求
         this._missingExpressionFiles = new Set();
+        this._generationBadgeElement = null;
         
-        
+    }
+
+    _normalizeModelGeneration(value) {
+        const numeric = Number(value);
+        return numeric === 2 || numeric === 3 ? numeric : null;
+    }
+
+    inferModelGenerationFromPath(modelPath) {
+        if (!modelPath) return null;
+        const path = String(modelPath).toLowerCase();
+        if (path.endsWith('.model3.json') || path.endsWith('.moc3')) return 3;
+        if (path.endsWith('.model.json') || path.endsWith('/model.json') || path.endsWith('.moc')) return 2;
+        return null;
+    }
+
+    detectModelGeneration(settings, modelPath) {
+        if (settings && typeof settings === 'object') {
+            const fileRefs = settings.FileReferences || settings.fileReferences;
+            if (fileRefs && typeof fileRefs === 'object') {
+                const moc = fileRefs.Moc || fileRefs.moc;
+                if (typeof moc === 'string') {
+                    const lowerMoc = moc.toLowerCase();
+                    if (lowerMoc.endsWith('.moc3')) return 3;
+                    if (lowerMoc.endsWith('.moc')) return 2;
+                }
+                if (Object.prototype.hasOwnProperty.call(fileRefs, 'Moc') ||
+                    Object.prototype.hasOwnProperty.call(fileRefs, 'moc')) {
+                    return 3;
+                }
+            }
+
+            const modelField = settings.model || settings.Model;
+            if (typeof modelField === 'string') {
+                const lowerModel = modelField.toLowerCase();
+                if (lowerModel.endsWith('.moc3')) return 3;
+                if (lowerModel.endsWith('.moc')) return 2;
+                return 2;
+            }
+        }
+
+        return this.inferModelGenerationFromPath(modelPath) || 3;
+    }
+
+    _ensureGenerationBadgeElement() {
+        if (this._generationBadgeElement && document.body.contains(this._generationBadgeElement)) {
+            return this._generationBadgeElement;
+        }
+        const el = document.createElement('div');
+        el.id = 'live2d-generation-badge';
+        el.style.position = 'fixed';
+        el.style.right = '14px';
+        el.style.bottom = '12px';
+        el.style.zIndex = '1200';
+        el.style.padding = '3px 8px';
+        el.style.borderRadius = '999px';
+        el.style.fontSize = '11px';
+        el.style.lineHeight = '1.2';
+        el.style.letterSpacing = '0.4px';
+        el.style.color = 'rgba(255,255,255,0.92)';
+        el.style.background = 'rgba(17, 24, 39, 0.5)';
+        el.style.border = '1px solid rgba(255,255,255,0.16)';
+        el.style.backdropFilter = 'blur(3px)';
+        el.style.pointerEvents = 'none';
+        el.style.display = 'none';
+        document.body.appendChild(el);
+        this._generationBadgeElement = el;
+        return el;
+    }
+
+    _updateGenerationBadge() {
+        const badge = this._ensureGenerationBadgeElement();
+        if (!badge) return;
+        if (this.modelGeneration === 2) {
+            badge.textContent = '2代';
+            badge.style.display = 'block';
+            return;
+        }
+        badge.style.display = 'none';
+    }
+
+    setModelGeneration(generation) {
+        this.modelGeneration = this._normalizeModelGeneration(generation);
+        window.live2dModelGeneration = this.modelGeneration;
+        this._updateGenerationBadge();
+    }
+
+    getModelGeneration() {
+        return this.modelGeneration;
     }
 
     // 从 FileReferences 推导 EmotionMapping（用于兼容历史数据）
@@ -155,6 +244,91 @@ class Live2DManager {
         } catch (e) {
             console.warn('从 FileReferences 推导 EmotionMapping 失败:', e);
         }
+
+        return result;
+    }
+
+    stripExpressionFileExtension(filePath) {
+        if (!filePath) return '';
+        const base = String(filePath).replace(/\\/g, '/').split('/').pop() || '';
+        return base.replace(/\.(exp3|exp)\.json$/i, '').replace(/\.json$/i, '');
+    }
+
+    stripModelConfigExtension(filePath) {
+        if (!filePath) return '';
+        const base = String(filePath).replace(/\\/g, '/').split('/').pop() || '';
+        return base.replace(/\.(model3|model)\.json$/i, '').replace(/\.json$/i, '');
+    }
+
+    buildNormalizedFileReferences(settings) {
+        const result = { Motions: {}, Expressions: [] };
+        const expressionKeys = new Set();
+        if (!settings || typeof settings !== 'object') {
+            return result;
+        }
+
+        const appendMotionGroup = (motions) => {
+            if (!motions || typeof motions !== 'object') return;
+            Object.keys(motions).forEach(group => {
+                const items = Array.isArray(motions[group]) ? motions[group] : [];
+                const normalizedItems = items
+                    .map(item => {
+                        if (typeof item === 'string') {
+                            return { File: item };
+                        }
+                        if (!item || typeof item !== 'object') {
+                            return null;
+                        }
+                        const file = item.File || item.file;
+                        if (!file) {
+                            return null;
+                        }
+                        const normalized = { File: file };
+                        const sound = item.Sound || item.sound;
+                        if (sound) normalized.Sound = sound;
+                        return normalized;
+                    })
+                    .filter(Boolean);
+
+                const existingFiles = new Set((result.Motions[group] || []).map(item => item && item.File).filter(Boolean));
+                const dedupedItems = normalizedItems.filter(item => {
+                    if (!item || !item.File || existingFiles.has(item.File)) {
+                        return false;
+                    }
+                    existingFiles.add(item.File);
+                    return true;
+                });
+
+                if (dedupedItems.length > 0) {
+                    result.Motions[group] = [...(result.Motions[group] || []), ...dedupedItems];
+                } else if (!result.Motions[group]) {
+                    result.Motions[group] = [];
+                }
+            });
+        };
+
+        const appendExpressions = (expressions) => {
+            if (!Array.isArray(expressions)) return;
+            expressions.forEach(item => {
+                if (!item || typeof item !== 'object') return;
+                const file = item.File || item.file;
+                if (!file) return;
+                const name = item.Name || item.name || this.stripExpressionFileExtension(file);
+                const dedupKey = `${name}::${file}`;
+                if (expressionKeys.has(dedupKey)) return;
+                expressionKeys.add(dedupKey);
+                result.Expressions.push({ Name: name, File: file });
+            });
+        };
+
+        if (settings.FileReferences && typeof settings.FileReferences === 'object') {
+            appendMotionGroup(settings.FileReferences.Motions);
+            appendExpressions(settings.FileReferences.Expressions);
+        }
+
+        // Cubism 2 的原始 model.json 使用小写字段（motions / expressions）。
+        appendMotionGroup(settings.motions || settings.Motions);
+        appendExpressions(settings.expressions || settings.Expressions);
 
         return result;
     }

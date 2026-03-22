@@ -312,7 +312,8 @@ async function initLive2DModel() {
 
                 // 如果还是没找到，尝试部分匹配（通过模型名称）
                 if (!modelPreferences) {
-                    const modelName = targetPathParts[targetPathParts.length - 2] || targetPathParts[targetPathParts.length - 1]?.replace('.model3.json', '');
+                    const modelName = targetPathParts[targetPathParts.length - 2] ||
+                        targetPathParts[targetPathParts.length - 1]?.replace(/\.(model3|model)\.json$/i, '').replace(/\.json$/i, '');
                     console.log('尝试模型名称匹配，模型名称:', modelName);
                     if (modelName) {
                         modelPreferences = preferences.find(p => {
@@ -465,4 +466,3 @@ if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function')
         }, 1000);
     }
 }
-

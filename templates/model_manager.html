@@ -31,8 +31,8 @@
         <div class="control-group">
             <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
             <input type="file" id="vrm-file-upload" accept=".vrm" style="display: none;">
-            <input type="file" id="motion-file-upload" accept=".motion3.json" style="display: none;">
-            <input type="file" id="expression-file-upload" accept=".exp3.json" style="display: none;">
+            <input type="file" id="motion-file-upload" accept=".motion3.json,.mtn" style="display: none;">
+            <input type="file" id="expression-file-upload" accept=".exp3.json,.exp.json" style="display: none;">
             <input type="file" id="vrm-animation-file-upload" accept=".vrma" style="display: none;">
             <div style="display: flex; gap: 0; align-items: center;">
                 <button id="upload-btn" class="btn btn-primary" data-i18n-title="live2d.importModel">
@@ -361,15 +361,15 @@
     <script src="/static/libs/live2d.min.js"></script>
     <script src="/static/libs/pixi.min.js"></script>
     <script src="/static/libs/index.min.js"></script>
-    <script src="/static/live2d-core.js"></script>
-    <script src="/static/live2d-emotion.js"></script>
-    <script src="/static/live2d-model.js"></script>
-    <script src="/static/live2d-interaction.js"></script>
-    <script src="/static/live2d-ui-buttons.js"></script>
-    <script src="/static/avatar-popup-common.js"></script>
-    <script src="/static/live2d-ui-popup.js"></script>
-    <script src="/static/live2d-ui-drag.js"></script>
-    <script src="/static/live2d-init.js"></script>
+    <script src="/static/live2d-core.js?v=20260322-cubism2-behavior"></script>
+    <script src="/static/live2d-emotion.js?v=20260322-cubism2-behavior"></script>
+    <script src="/static/live2d-model.js?v=20260322-cubism2-behavior"></script>
+    <script src="/static/live2d-interaction.js?v=20260322-cubism2-behavior"></script>
+    <script src="/static/live2d-ui-buttons.js?v=20260322-cubism2-behavior"></script>
+    <script src="/static/avatar-popup-common.js?v=20260322-cubism2-behavior"></script>
+    <script src="/static/live2d-ui-popup.js?v=20260322-cubism2-behavior"></script>
+    <script src="/static/live2d-ui-drag.js?v=20260322-cubism2-behavior"></script>
+    <script src="/static/live2d-init.js?v=20260322-cubism2-behavior"></script>
 
     <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
     <!-- 

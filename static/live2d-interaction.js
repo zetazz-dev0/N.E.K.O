@@ -840,6 +840,8 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 distance = ellipseDistance <= 1 ? 0 : (ellipseDistance - 1) * Math.min(ellipseRadiusX, ellipseRadiusY);
             }
 
+            const isCubism2 = this.getModelGeneration && this.getModelGeneration() === 2;
+
             // 额外检查：鼠标必须在模型可见区域附近
             const isPointerNearVisibleModel = pointer.x >= bounds.left - threshold && pointer.x <= bounds.right + threshold &&
                                               pointer.y >= Math.max(bounds.top, 0) - threshold && pointer.y <= Math.min(bounds.bottom, window.innerHeight) + threshold;
@@ -849,13 +851,28 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 this.isFocusing = false;
                 startHideTimer();
                 setLockedHoverFade(false);
-                return;
+                // Cubism2 保持全局 focus 跟随，避免出现“只能靠近模型才跟随鼠标”的体验退化
+                if (!isCubism2) {
+                    return;
+                }
             }
             // 只有在锁定、按住 Ctrl 键且鼠标在模型附近时才变淡
             const shouldFade = this.isLocked && ctrlKeyPressed && distance < HoverFadethreshold;
             setLockedHoverFade(shouldFade);
 
             const canvasEl = document.getElementById('live2d-canvas');
+            const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
+
+            if (isCubism2) {
+                if (isMouseTrackingEnabled) {
+                    model.focus(pointer.x, pointer.y);
+                } else if (model.internalModel && model.internalModel.focusController) {
+                    const fc = model.internalModel.focusController;
+                    fc.targetX = 0;
+                    fc.targetY = 0;
+                }
+            }
+
             if (distance < threshold) {
                 showButtons();
                 if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
@@ -863,8 +880,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 }
                 // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
                 // 同时检查鼠标跟踪是否启用
-                const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
-                if (this.isFocusing) {
+                if (!isCubism2 && this.isFocusing) {
                     if (isMouseTrackingEnabled) {
                         model.focus(pointer.x, pointer.y);
                     } else {

@@ -1,3 +1,6 @@
+# mkcert 本地证书
+*.pem
+
 # 忽略敏感配置
 core_config.txt
 test.py

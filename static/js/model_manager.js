@@ -742,6 +742,55 @@ document.addEventListener('DOMContentLoaded', async () => {
     let isVrmAnimationPlaying = false; // 跟踪VRM动作播放状态
     let isVrmExpressionPlaying = false; // 跟踪VRM表情播放状态
 
+    const isSupportedLive2DModelConfigFile = (filename) => {
+        if (!filename) return false;
+        const base = filename.replace(/\\/g, '/').split('/').pop().toLowerCase();
+        return (
+            /\.model3\.json$/i.test(base) ||
+            /\.model\.json$/i.test(base) ||
+            /^model(?:[._-].+)?\.json$/i.test(base) ||
+            /^index\.json$/i.test(base) ||
+            /^\d+\.json$/i.test(base)
+        );
+    };
+
+    const isSupportedExpressionFile = (filename) => {
+        return !!filename && /\.(exp3|exp)\.json$/i.test(filename);
+    };
+
+    const isSupportedMotionFile = (filename) => {
+        return !!filename && (/\.motion3\.json$/i.test(filename) || /\.mtn$/i.test(filename));
+    };
+
+    const stripLive2DModelConfigExtension = (filename) => {
+        if (!filename) return '';
+        return filename
+            .split('/').pop()
+            .replace(/\.(model3|model)\.json$/i, '')
+            .replace(/\.json$/i, '');
+    };
+
+    const stripExpressionFileExtension = (filename) => {
+        if (!filename) return '';
+        return filename
+            .split('/').pop()
+            .replace(/\.(exp3|exp)\.json$/i, '')
+            .replace(/\.json$/i, '');
+    };
+
+    const stripMotionFileExtension = (filename) => {
+        if (!filename) return '';
+        return filename
+            .split('/').pop()
+            .replace(/\.motion3\.json$/i, '')
+            .replace(/\.mtn$/i, '');
+    };
+
+    const formatLive2DModelLabel = (model) => {
+        const base = model.display_name || model.name;
+        return Number(model.generation) === 2 ? `${base} · 2代` : base;
+    };
+
     // 更新模型类型按钮文字的函数（使用统一管理器）
     function updateModelTypeButtonText() {
         if (modelTypeManager) {
@@ -1236,7 +1285,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             availableModels.forEach(model => {
                 const option = document.createElement('option');
                 option.value = model.name;
-                option.textContent = model.display_name || model.name;
+                option.textContent = formatLive2DModelLabel(model);
                 if (model.item_id) {
                     option.dataset.itemId = model.item_id;
                 }
@@ -1325,11 +1374,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (segments.length < 2) return null;
             const filename = segments[segments.length - 1];
             const folder = segments[segments.length - 2];
-            if (!/\.model3\.json$/i.test(filename)) return null;
+            if (!isSupportedLive2DModelConfigFile(filename)) return null;
 
             if (segments[0] === 'workshop') {
                 if (segments.length >= 4) return decodeMaybeUrlComponent(folder);
-                const base = filename.replace(/\.model3\.json$/i, '');
+                const base = stripLive2DModelConfigExtension(filename);
                 return decodeMaybeUrlComponent(base) || null;
             }
 
@@ -1419,10 +1468,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     modelData.idle_animation = idleAnimSel.value;
                 }
             } else {
-                const inferredFolderName = extractLive2DFolderNameFromPath(
-                    (currentModelInfo && currentModelInfo.path) ? currentModelInfo.path : modelName
-                );
-                modelData.live2d = decodeMaybeUrlComponent(inferredFolderName || modelName);
+                const live2DPathOrName = (currentModelInfo && currentModelInfo.path) ? currentModelInfo.path : modelName;
+                const live2DFileName = typeof live2DPathOrName === 'string'
+                    ? live2DPathOrName.split('?')[0].split('#')[0].split('/').pop()
+                    : '';
+                const inferredFolderName = extractLive2DFolderNameFromPath(live2DPathOrName);
+                modelData.live2d = isSupportedLive2DModelConfigFile(live2DFileName)
+                    ? decodeMaybeUrlComponent(live2DPathOrName)
+                    : decodeMaybeUrlComponent(inferredFolderName || modelName);
                 if (itemId != null && itemId !== '') {
                     modelData.item_id = itemId;
                     modelData.live2d_item_id = itemId;
@@ -1677,6 +1730,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
             }
         } else { // VRM
+            if (window.live2dManager && typeof window.live2dManager.setModelGeneration === 'function') {
+                window.live2dManager.setModelGeneration(null);
+            }
             // 【新增】清理Live2D资源（内存管理改进）
             if (window.live2dManager) {
                 try {
@@ -3250,6 +3306,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 确保字段存在，防止 undefined 访问导致 TypeError
             filesData.motion_files = filesData.motion_files || [];
             filesData.expression_files = filesData.expression_files || [];
+            if (filesData.generation === 2 || filesData.generation === 3) {
+                modelInfo.generation = filesData.generation;
+            }
 
             currentModelFiles = filesData;
 
@@ -3262,8 +3321,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 对于用户mod模型，直接使用modelInfo.path（已经包含/user_mods/路径）
                 modelJsonUrl = modelInfo.path;
             } else if (finalSteamId && finalSteamId !== 'undefined') {
-                // 如果提供了finalSteamId但没有model_config_url，使用原来的方式构建URL（兼容模式）
-                modelJsonUrl = `/workshop/${finalSteamId}/${modelName}.model3.json`;
+                // 如果提供了finalSteamId但没有model_config_url，回退到模型列表里已经解析好的实际路径
+                modelJsonUrl = modelInfo.path;
             } else {
                 // 否则使用原来的路径
                 modelJsonUrl = modelInfo.path;
@@ -3284,12 +3343,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 modelConfig.FileReferences.Motions.PreviewAll = currentModelFiles.motion_files.map(file => ({
                     File: file  // 直接使用API返回的完整路径
                 }));
+                // Cubism 2 运行时实际读取的是 legacy `motions`，这里同步注入预览组。
+                if (!modelConfig.motions || typeof modelConfig.motions !== 'object' || Array.isArray(modelConfig.motions)) {
+                    modelConfig.motions = {};
+                }
+                modelConfig.motions.PreviewAll = currentModelFiles.motion_files.map(file => ({
+                    file
+                }));
             }
 
             // Expressions: Overwrite with all available expression files for preview purposes.
             modelConfig.FileReferences.Expressions = currentModelFiles.expression_files.map(file => ({
-                Name: file.split('/').pop().replace('.exp3.json', ''),  // 从路径中提取文件名作为名称
+                Name: stripExpressionFileExtension(file),  // 从路径中提取文件名作为名称
                 File: file  // 直接使用API返回的完整路径
+            }));
+            // Cubism 2 运行时读取 legacy `expressions` 数组，预览时也同步覆盖。
+            modelConfig.expressions = currentModelFiles.expression_files.map(file => ({
+                name: stripExpressionFileExtension(file),
+                file
             }));
 
             // 5. Load preferences
@@ -3302,6 +3373,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 dragEnabled: true,
                 wheelEnabled: true,
                 preferences: modelPreferences,
+                generation: modelInfo.generation,
                 skipCloseWindows: true  // model_manager 页面不需要关闭其他窗口
             });
             live2dModel = window.live2dManager.getCurrentModel();
@@ -3588,7 +3660,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // 从完整路径中提取表情名称（去掉路径和扩展名）
-        const expressionName = expressionSelect.value.split('/').pop().replace('.exp3.json', '');
+        const expressionName = stripExpressionFileExtension(expressionSelect.value);
 
         try {
             // 清除之前的表情预览恢复定时器
@@ -4063,8 +4135,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         availableModels.forEach(model => {
                             const option = document.createElement('option');
                             option.value = model.name;
-                            // 使用display_name（如果存在）显示更友好的名称
-                            option.textContent = model.display_name || model.name;
+                            option.textContent = formatLive2DModelLabel(model);
                             if (model.item_id) {
                                 option.dataset.itemId = model.item_id;
                             }
@@ -4465,7 +4536,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             availableModels.forEach(model => {
                 const option = document.createElement('option');
                 option.value = model.name;
-                option.textContent = model.display_name || model.name;
+                option.textContent = formatLive2DModelLabel(model);
                 // Preserve workshop item_id so it's not lost when the select is reconstructed
                 if (model.item_id) {
                     option.dataset.itemId = model.item_id;
@@ -4552,15 +4623,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // 只显示 .exp3.json 文件
-        const exp3Files = currentModelFiles.expression_files.filter(file => file.endsWith('.exp3.json'));
+        // 只显示支持的表情文件
+        const exp3Files = currentModelFiles.expression_files.filter(file => isSupportedExpressionFile(file));
 
         // 更新隐藏的 select 元素
         persistentSelect.innerHTML = `<option value="" data-i18n="live2d.selectPersistentExpression">${t('live2d.selectPersistentExpression', '选择常驻表情')}</option>`;
         exp3Files.forEach(file => {
             const option = document.createElement('option');
             option.value = file;
-            const displayName = file.split('/').pop().replace('.exp3.json', '');
+            const displayName = stripExpressionFileExtension(file);
             option.textContent = displayName;
             persistentSelect.appendChild(option);
         });
@@ -4597,7 +4668,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     persistentExpressions.forEach(file => {
                         const item = document.createElement('div');
                         item.className = 'persistent-item';
-                        const fileName = file.split('/').pop().replace('.exp3.json', '');
+                        const fileName = stripExpressionFileExtension(file);
                         const nameSpan = document.createElement('span');
                         nameSpan.textContent = fileName;
                         const deleteBtn = document.createElement('button');
@@ -4784,10 +4855,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             option.value = opt;
 
             if (type === 'expression') {
-                const displayName = opt.split('/').pop().replace('.exp3.json', '');
+                const displayName = stripExpressionFileExtension(opt);
                 option.textContent = displayName;
             } else if (type === 'motion') {
-                const displayName = opt.split('/').pop().replace('.motion3.json', '');
+                const displayName = stripMotionFileExtension(opt);
                 option.textContent = displayName;
             } else {
                 option.textContent = opt;

@@ -446,11 +446,15 @@
                 ];
 
                 // 按顺序加载脚本的辅助函数
+                const live2dScriptVersion = '20260322-cubism2-behavior';
+
                 async function loadScriptsSequentially(scripts) {
                     for (const src of scripts) {
                         await new Promise((resolve, reject) => {
                             const script = document.createElement('script');
-                            script.src = src;
+                            script.src = src.includes('?')
+                                ? `${src}&v=${live2dScriptVersion}`
+                                : `${src}?v=${live2dScriptVersion}`;
                             script.onload = resolve;
                             script.onerror = reject;
                             document.body.appendChild(script);

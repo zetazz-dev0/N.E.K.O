@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
 from utils.file_utils import atomic_write_json
+from utils.frontend_utils import select_preferred_live2d_model_config
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
     get_workshop_path,
@@ -2324,11 +2325,8 @@ async def publish_to_workshop(request: Request):
                     for item in os.listdir(content_folder):
                         item_path = os.path.join(content_folder, item)
                         if os.path.isdir(item_path) and not item.startswith('.'):
-                            # 检查是否是 Live2D 模型目录（包含 .model3.json 或 model.json）
-                            model_files = glob.glob(os.path.join(item_path, "*.model3.json")) + \
-                                         glob.glob(os.path.join(item_path, "*.model.json")) + \
-                                         glob.glob(os.path.join(item_path, "model.json"))
-                            if model_files:
+                            model_file = select_preferred_live2d_model_config(os.listdir(item_path), item_path)
+                            if model_file:
                                 uploaded_snapshot['model_name'] = item
                                 logger.info(f"检测到模型目录: {item}")
                                 break
@@ -2768,7 +2766,10 @@ async def sync_workshop_character_cards() -> dict:
                                 set_reserved(catgirl_data, 'avatar', 'asset_source_id', str(item_id))
                                 set_reserved(catgirl_data, 'avatar', 'asset_source', 'steam_workshop')
                                 set_reserved(catgirl_data, 'avatar', 'model_type', 'live2d')
-                                if '/' in legacy_live2d_name or legacy_live2d_name.endswith('.model3.json'):
+                                if (
+                                    '/' in legacy_live2d_name or
+                                    legacy_live2d_name.lower().endswith('.json')
+                                ):
                                     live2d_model_path = legacy_live2d_name
                                 else:
                                     live2d_model_path = f'{legacy_live2d_name}/{legacy_live2d_name}.model3.json'

@@ -324,6 +324,9 @@
             // 4. 根据模型类型加载相应的模型
             console.log('[猫娘切换] 检测到模型类型:', modelType);
             if (modelType === 'vrm') {
+                if (window.live2dManager && typeof window.live2dManager.setModelGeneration === 'function') {
+                    window.live2dManager.setModelGeneration(null);
+                }
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
 
@@ -751,7 +754,8 @@
 
                         await window.live2dManager.loadModel(modelConfig, {
                             preferences: modelPreferences,
-                            isMobile: window.innerWidth <= 768
+                            isMobile: window.innerWidth <= 768,
+                            generation: modelData.model_info.generation,
                         });
 
                         if (window.LanLan1) {
@@ -789,7 +793,8 @@
                                 const defaultConfig = await defaultRes.json();
                                 defaultConfig.url = defaultPath;
                                 await window.live2dManager.loadModel(defaultConfig, {
-                                    isMobile: window.innerWidth <= 768
+                                    isMobile: window.innerWidth <= 768,
+                                    generation: 3,
                                 });
                                 if (window.LanLan1) {
                                     window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();

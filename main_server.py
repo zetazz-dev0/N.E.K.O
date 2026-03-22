@@ -1161,7 +1161,24 @@ if __name__ == "__main__":
     # 使用 os.path.abspath 输出更清晰的完整路径
     logger.info(f"Serving static files from: {os.path.abspath('static')}")
     logger.info(f"Serving index.html from: {os.path.abspath('templates/index.html')}")
-    logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
+    
+    ssl_certfile = os.environ.get("NEKO_SSL_CERTFILE", "").strip()
+    ssl_keyfile = os.environ.get("NEKO_SSL_KEYFILE", "").strip()
+    ssl_enabled = bool(ssl_certfile or ssl_keyfile)
+    if ssl_enabled:
+        if not ssl_certfile or not ssl_keyfile:
+            logger.error("SSL startup failed: both NEKO_SSL_CERTFILE and NEKO_SSL_KEYFILE are required")
+            raise SystemExit(1)
+        if not os.path.isfile(ssl_certfile):
+            logger.error("SSL startup failed: certificate file not found: %s", ssl_certfile)
+            raise SystemExit(1)
+        if not os.path.isfile(ssl_keyfile):
+            logger.error("SSL startup failed: key file not found: %s", ssl_keyfile)
+            raise SystemExit(1)
+        logger.info("HTTPS enabled with cert: %s | key: %s", ssl_certfile, ssl_keyfile)
+
+    access_scheme = "https" if ssl_enabled else "http"
+    logger.info(f"Access UI at: {access_scheme}://127.0.0.1:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
     logger.info("-----------------------------")
 
     # 使用统一的速率限制日志过滤器
@@ -1184,13 +1201,15 @@ if __name__ == "__main__":
     _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
     config = uvicorn.Config(
         app=app,
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=MAIN_SERVER_PORT,
         log_level="info",
         loop="asyncio",
         reload=False,
         proxy_headers=_behind_proxy,
         forwarded_allow_ips="*" if _behind_proxy else None,
+        ssl_certfile=ssl_certfile or None,
+        ssl_keyfile=ssl_keyfile or None,
     )
     server = uvicorn.Server(config)
     
@@ -1231,7 +1250,7 @@ if __name__ == "__main__":
 
     # 4) 启动服务器（阻塞，直到 server.should_exit=True）
     logger.info("--- Starting FastAPI Server ---")
-    logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT}/{args.page}")
+    logger.info(f"Access UI at: {access_scheme}://127.0.0.1:{MAIN_SERVER_PORT}/{args.page}")
     
     try:
         server.run()

@@ -59,6 +59,34 @@ function ensureReservedFieldsLoaded() {
     return _reservedFieldsReady || Promise.resolve();
 }
 
+function isSupportedLive2DModelConfigFile(filename) {
+    if (!filename) return false;
+    const base = filename.replace(/\\/g, '/').split('/').pop().toLowerCase();
+    return (
+        /\.model3\.json$/i.test(base) ||
+        /\.model\.json$/i.test(base) ||
+        /^model(?:[._-].+)?\.json$/i.test(base) ||
+        /^index\.json$/i.test(base) ||
+        /^\d+\.json$/i.test(base)
+    );
+}
+
+function isSupportedLive2DMotionFile(filename) {
+    return !!filename && (/\.motion3\.json$/i.test(filename) || /\.mtn$/i.test(filename));
+}
+
+function isSupportedLive2DExpressionFile(filename) {
+    return !!filename && /\.(exp3|exp)\.json$/i.test(filename);
+}
+
+function stripExpressionFileExtension(filename) {
+    if (!filename) return '';
+    return filename
+        .split('/').pop()
+        .replace(/\.(exp3|exp)\.json$/i, '')
+        .replace(/\.json$/i, '');
+}
+
 // JavaScript控制的tooltip实现
 document.addEventListener('DOMContentLoaded', function () {
     void loadCharacterReservedFieldsConfig();
@@ -3612,9 +3640,8 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
             // 对于用户mod模型，直接使用modelInfo.path（已经包含/user_mods/路径）
             modelJsonUrl = modelInfo.path;
         } else if (finalSteamId && finalSteamId !== 'undefined') {
-            // 如果提供了finalSteamId但没有model_config_url，使用兼容模式构建URL
-            // 注意：上传后的目录结构是 workshop/{item_id}/{model_name}/{model_name}.model3.json
-            modelJsonUrl = `/workshop/${finalSteamId}/${modelName}/${modelName}.model3.json`;
+            // 如果提供了finalSteamId但没有model_config_url，回退到模型列表里已经解析好的实际路径
+            modelJsonUrl = modelInfo.path;
         } else {
             // 否则使用原来的路径
             modelJsonUrl = modelInfo.path;
@@ -3636,12 +3663,22 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
             modelConfig.FileReferences.Motions.PreviewAll = filesData.motion_files.map(file => ({
                 File: file  // 直接使用API返回的完整路径
             }));
+            if (!modelConfig.motions || typeof modelConfig.motions !== 'object' || Array.isArray(modelConfig.motions)) {
+                modelConfig.motions = {};
+            }
+            modelConfig.motions.PreviewAll = filesData.motion_files.map(file => ({
+                file
+            }));
         }
 
         // Expressions: Overwrite with all available expression files for preview purposes.
         modelConfig.FileReferences.Expressions = filesData.expression_files.map(file => ({
-            Name: file.split('/').pop().replace('.exp3.json', ''),  // 从路径中提取文件名作为名称
+            Name: stripExpressionFileExtension(file),  // 从路径中提取文件名作为名称
             File: file  // 直接使用API返回的完整路径
+        }));
+        modelConfig.expressions = filesData.expression_files.map(file => ({
+            name: stripExpressionFileExtension(file),
+            file
         }));
 
         // 5. Load preferences (如果需要)
@@ -3996,7 +4033,7 @@ async function loadLive2DModelFromFolder(files) {
 
         // 查找模型配置文件
         const modelConfigFile = files.find(file =>
-            file.name.toLowerCase().endsWith('.model3.json') &&
+            isSupportedLive2DModelConfigFile(file.name) &&
             file.webkitRelativePath.startsWith(firstFolder + '/')
         );
 
@@ -4021,11 +4058,11 @@ async function loadLive2DModelFromFolder(files) {
                 modelFiles[relativePath] = file;
 
                 // 收集动作文件
-                if (file.name.toLowerCase().endsWith('.motion3.json')) {
+                if (isSupportedLive2DMotionFile(file.name)) {
                     motionFiles.push(relativePath);
                 }
                 // 收集表情文件
-                if (file.name.toLowerCase().endsWith('.exp3.json')) {
+                if (isSupportedLive2DExpressionFile(file.name)) {
                     expressionFiles.push(relativePath);
                 }
             }
@@ -4039,13 +4076,23 @@ async function loadLive2DModelFromFolder(files) {
             modelConfig.FileReferences.Motions.PreviewAll = motionFiles.map(file => ({
                 File: file
             }));
+            if (!modelConfig.motions || typeof modelConfig.motions !== 'object' || Array.isArray(modelConfig.motions)) {
+                modelConfig.motions = {};
+            }
+            modelConfig.motions.PreviewAll = motionFiles.map(file => ({
+                file
+            }));
         }
 
         // 更新表情引用
         if (expressionFiles.length > 0) {
             modelConfig.FileReferences.Expressions = expressionFiles.map(file => ({
-                Name: file.split('/').pop().replace('.exp3.json', ''),
+                Name: stripExpressionFileExtension(file),
                 File: file
+            }));
+            modelConfig.expressions = expressionFiles.map(file => ({
+                name: stripExpressionFileExtension(file),
+                file
             }));
         }
 
@@ -4174,7 +4221,7 @@ function updatePreviewControls(motionFiles, expressionFiles) {
 
         // 添加表情选项
         expressionFiles.forEach(expressionFile => {
-            const expressionName = expressionFile.split('/').pop().replace('.exp3.json', '');
+            const expressionName = stripExpressionFileExtension(expressionFile);
             const option = document.createElement('option');
             option.value = expressionName;
             option.textContent = expressionName;

@@ -30,7 +30,16 @@ from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchErro
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
 from utils.audio import normalize_voice_clone_api_audio
 from utils.file_utils import atomic_write_json
-from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
+from utils.frontend_utils import (
+    detect_live2d_generation_from_config_path,
+    find_models,
+    find_model_config_file,
+    find_model_directory,
+    infer_live2d_generation_from_filename,
+    is_user_imported_model,
+    select_preferred_live2d_model_config,
+    strip_live2d_model_config_suffix,
+)
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
@@ -78,6 +87,42 @@ def _filter_mutable_catgirl_fields(data: dict) -> dict:
         for key, value in data.items()
         if key not in CHARACTER_RESERVED_FIELD_SET
     }
+
+
+def _normalize_saved_live2d_model_path(model_path: str) -> str:
+    """Normalize stored Live2D model path and strip accidental absolute origins."""
+    if not model_path:
+        return ""
+    normalized = str(model_path).strip().replace("\\", "/")
+    if normalized.startswith(("http://", "https://")):
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(normalized)
+            normalized = parsed.path or normalized
+        except Exception:
+            pass
+    return normalized
+
+
+def _resolve_live2d_model_path_for_storage(model_value: str) -> str:
+    """Resolve a model name or path to the actual stored config path."""
+    normalized = _normalize_saved_live2d_model_path(model_value)
+    if not normalized:
+        return ""
+
+    if normalized.lower().endswith(".json"):
+        return normalized
+
+    live2d_name = normalized.rsplit("/", 1)[-1]
+    matching_model = next((m for m in find_models() if m.get("name") == live2d_name), None)
+    if matching_model and isinstance(matching_model.get("path"), str):
+        return matching_model["path"]
+
+    resolved_path = find_model_config_file(live2d_name)
+    if resolved_path:
+        return resolved_path
+
+    return f"{live2d_name}/{live2d_name}.model3.json"
 
 
 async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
@@ -188,6 +233,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         
         # 查找指定角色的Live2D模型
         live2d_model_name = None
+        saved_live2d_model_path = ''
         model_info = None
         
         # 首先尝试通过item_id查找模型
@@ -212,7 +258,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             # 在猫娘列表中查找
             if '猫娘' in characters and catgirl_name in characters['猫娘']:
                 catgirl_data = characters['猫娘'][catgirl_name]
-                live2d_model_name = get_reserved(
+                saved_live2d_model_path = get_reserved(
                     catgirl_data,
                     'avatar',
                     'live2d',
@@ -220,14 +266,16 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                     default='',
                     legacy_keys=('live2d',),
                 )
-                if live2d_model_name and str(live2d_model_name).endswith('.model3.json'):
+                saved_live2d_model_path = _normalize_saved_live2d_model_path(saved_live2d_model_path)
+                live2d_model_name = saved_live2d_model_path
+                if saved_live2d_model_path and str(saved_live2d_model_path).lower().endswith('.json'):
                     # COMPAT(v1->v2): 新 schema 存 model_path，旧逻辑需要模型目录名。
-                    path_parts = str(live2d_model_name).replace('\\', '/').split('/')
+                    path_parts = str(saved_live2d_model_path).replace('\\', '/').split('/')
                     if len(path_parts) >= 2:
                         live2d_model_name = path_parts[-2]
                     else:
                         filename = path_parts[-1]
-                        live2d_model_name = filename[:-len('.model3.json')]
+                        live2d_model_name = strip_live2d_model_config_suffix(filename)
                 
                 # 检查是否有保存的item_id
                 saved_item_id = get_reserved(
@@ -265,50 +313,90 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             installed_folder = item.get('installedFolder')
                             workshop_item_id = item.get('publishedFileId')
                             if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and workshop_item_id:
-                                # 检查安装目录下是否有.model3.json文件
-                                for filename in os.listdir(installed_folder):
-                                    if filename.endswith('.model3.json'):
-                                        model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
-                                        if model_name not in [m['name'] for m in all_models]:
-                                            all_models.append({
-                                                'name': model_name,
-                                                'path': f'/workshop/{workshop_item_id}/{filename}',
-                                                'source': 'steam_workshop',
-                                                'item_id': workshop_item_id
-                                            })
+                                # 检查安装目录下是否有支持的模型配置文件
+                                config_file = select_preferred_live2d_model_config(os.listdir(installed_folder), installed_folder)
+                                if config_file:
+                                    model_name = strip_live2d_model_config_suffix(config_file)
+                                    if model_name not in [m['name'] for m in all_models]:
+                                        generation = detect_live2d_generation_from_config_path(
+                                            os.path.join(installed_folder, config_file)
+                                        )
+                                        all_models.append({
+                                            'name': model_name,
+                                            'path': f'/workshop/{workshop_item_id}/{config_file}',
+                                            'source': 'steam_workshop',
+                                            'item_id': workshop_item_id,
+                                            'generation': generation,
+                                        })
                                 # 检查子目录
                                 for subdir in os.listdir(installed_folder):
                                     subdir_path = os.path.join(installed_folder, subdir)
                                     if os.path.isdir(subdir_path):
                                         model_name = subdir
-                                        model3_files = [f for f in os.listdir(subdir_path) if f.endswith('.model3.json')]
-                                        if model3_files:
-                                            model_file = model3_files[0]
+                                        model_file = select_preferred_live2d_model_config(os.listdir(subdir_path), subdir_path)
+                                        if model_file:
                                             if model_name not in [m['name'] for m in all_models]:
+                                                generation = detect_live2d_generation_from_config_path(
+                                                    os.path.join(subdir_path, model_file)
+                                                )
                                                 all_models.append({
                                                     'name': model_name,
                                                     'path': encode_url_path(f'/workshop/{workshop_item_id}/{model_name}/{model_file}'),
                                                     'source': 'steam_workshop',
-                                                    'item_id': workshop_item_id
+                                                    'item_id': workshop_item_id,
+                                                    'generation': generation,
                                                 })
                 except Exception as we:
                     logger.debug(f"获取工坊模型列表时出错（非关键）: {we}")
                 
-                # 查找匹配的模型
-                matching_model = next((m for m in all_models if m['name'] == live2d_model_name), None)
-                
+                normalized_saved_model_path = _normalize_saved_live2d_model_path(saved_live2d_model_path)
+                matching_model = None
+                if normalized_saved_model_path.lower().endswith('.json'):
+                    encoded_saved_model_path = encode_url_path(normalized_saved_model_path)
+                    matching_model = next(
+                        (
+                            m for m in all_models
+                            if isinstance(m.get('path'), str) and (
+                                m['path'] == encoded_saved_model_path or
+                                m['path'].endswith('/' + normalized_saved_model_path.lstrip('/'))
+                            )
+                        ),
+                        None,
+                    )
+
+                if not matching_model:
+                    matching_model = next((m for m in all_models if m['name'] == live2d_model_name), None)
+
                 if matching_model:
                     # 使用完整的模型信息，包含item_id
                     model_info = matching_model.copy()
+                    if model_info.get('generation') not in (2, 3):
+                        inferred = infer_live2d_generation_from_filename(model_info.get('path') or '')
+                        model_info['generation'] = inferred if inferred in (2, 3) else 3
                     logger.debug(f"从完整模型列表获取模型信息: {model_info}")
+                    matched_model_path = str(model_info.get('path') or '')
+                    if (
+                        catgirl_name
+                        and normalized_saved_model_path.lower().endswith('.json')
+                        and matched_model_path
+                        and matched_model_path != normalized_saved_model_path
+                    ):
+                        if set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', matched_model_path):
+                            _config_manager.save_characters(characters)
+                            saved_live2d_model_path = matched_model_path
+                            logger.info(
+                                "已自动修正角色 %s 的 Live2D 模型路径: %s -> %s",
+                                catgirl_name,
+                                normalized_saved_model_path,
+                                matched_model_path,
+                            )
                 else:
                     # 如果在完整列表中找不到，回退到原来的逻辑
                     model_dir, url_prefix = find_model_directory(live2d_model_name)
                     if model_dir and os.path.exists(model_dir):
                         # 查找模型配置文件
-                        model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
-                        if model_files:
-                            model_file = model_files[0]
+                        model_file = select_preferred_live2d_model_config(os.listdir(model_dir), model_dir)
+                        if model_file:
                             
                             # 使用保存的item_id构建model_path，从之前的逻辑中获取saved_item_id
                             saved_item_id = (
@@ -329,6 +417,9 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                 else:
                                     model_path = encode_url_path(f'{url_prefix}/{saved_item_id}/{model_file}')
                                 logger.debug(f"使用保存的item_id构建模型路径: {model_path}")
+                            elif normalized_saved_model_path.lower().endswith('.json'):
+                                model_path = encode_url_path(normalized_saved_model_path)
+                                logger.debug(f"使用保存的完整模型路径: {model_path}")
                             else:
                                 # 原始路径构建逻辑
                                 model_path = encode_url_path(f'{url_prefix}/{live2d_model_name}/{model_file}')
@@ -337,7 +428,10 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             model_info = {
                                 'name': live2d_model_name,
                                 'item_id': saved_item_id,
-                                'path': model_path
+                                'path': model_path,
+                                'generation': detect_live2d_generation_from_config_path(
+                                    os.path.join(model_dir, model_file)
+                                ),
                             }
             except Exception as e:
                 logger.warning(f"获取模型信息失败: {e}")
@@ -353,18 +447,23 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 
                 if matching_model:
                     model_info = matching_model.copy()
+                    if model_info.get('generation') not in (2, 3):
+                        inferred = infer_live2d_generation_from_filename(model_info.get('path') or '')
+                        model_info['generation'] = inferred if inferred in (2, 3) else 3
                     model_info['is_fallback'] = True
                 else:
                     # 如果找不到，回退到原来的逻辑
                     model_dir, url_prefix = find_model_directory('mao_pro')
                     if model_dir and os.path.exists(model_dir):
-                        model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
-                        if model_files:
-                            model_file = model_files[0]
+                        model_file = select_preferred_live2d_model_config(os.listdir(model_dir), model_dir)
+                        if model_file:
                             model_path = f'{url_prefix}/mao_pro/{model_file}'
                             model_info = {
                                 'name': 'mao_pro',
                                 'path': model_path,
+                                'generation': detect_live2d_generation_from_config_path(
+                                    os.path.join(model_dir, model_file)
+                                ),
                                 'is_fallback': True  # 标记这是回退模型
                             }
             except Exception as e:
@@ -372,6 +471,9 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         
         if model_info and isinstance(model_info.get('path'), str):
             model_info['path'] = encode_url_path(model_info['path'])
+        if model_info and model_info.get('generation') not in (2, 3):
+            inferred = infer_live2d_generation_from_filename(model_info.get('path') or model_info.get('name') or '')
+            model_info['generation'] = inferred if inferred in (2, 3) else 3
 
         return JSONResponse(content={
             'success': True,
@@ -582,12 +684,8 @@ async def update_catgirl_l2d(name: str, request: Request):
             set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)  # 清理 VRM 打光配置
             
             # 更新Live2D模型设置，同时保存item_id（如果有）
-            normalized_live2d = str(live2d_model).strip().replace('\\', '/')
-            if normalized_live2d.endswith('.model3.json'):
-                live2d_model_path = normalized_live2d
-            else:
-                live2d_name = normalized_live2d.rsplit('/', 1)[-1]
-                live2d_model_path = f"{live2d_name}/{live2d_name}.model3.json"
+            normalized_live2d = _normalize_saved_live2d_model_path(live2d_model)
+            live2d_model_path = _resolve_live2d_model_path_for_storage(normalized_live2d)
             set_reserved(
                 characters['猫娘'][name],
                 'avatar',

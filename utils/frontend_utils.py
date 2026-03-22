@@ -15,6 +15,7 @@
 import re
 import regex
 import os
+import json
 import logging
 import locale
 from datetime import datetime
@@ -25,6 +26,11 @@ import httpx
 chinese_char_pattern = re.compile(r'[\u4e00-\u9fff]+')
 bracket_patterns = [re.compile(r'\(.*?\)'),
                    re.compile('（.*?）')]
+LIVE2D_MODEL_CONFIG_SUFFIXES = ('.model3.json', '.model.json')
+LIVE2D_MOTION_SUFFIXES = ('.motion3.json', '.mtn')
+LIVE2D_EXPRESSION_SUFFIXES = ('.exp3.json', '.exp.json')
+LIVE2D_MODEL_CONFIG_BASENAME_PATTERN = re.compile(r'^model(?:[._-].+)?\.json$', re.IGNORECASE)
+LIVE2D_MODEL_CONFIG_NUMERIC_PATTERN = re.compile(r'^\d+\.json$', re.IGNORECASE)
 
 # whether contain chinese character
 def contains_chinese(text):
@@ -174,10 +180,225 @@ def calculate_text_similarity(text1: str, text2: str) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def is_supported_live2d_model_config_file(filename: str) -> bool:
+    """Return True if *filename* is a supported Live2D model settings file."""
+    if not filename:
+        return False
+    basename = os.path.basename(str(filename).replace('\\', '/'))
+    lower = basename.lower()
+    return (
+        lower.endswith(LIVE2D_MODEL_CONFIG_SUFFIXES)
+        or lower in {'model.json', 'index.json'}
+        or LIVE2D_MODEL_CONFIG_BASENAME_PATTERN.match(lower) is not None
+        or LIVE2D_MODEL_CONFIG_NUMERIC_PATTERN.match(lower) is not None
+    )
+
+
+def infer_live2d_generation_from_filename(filename: str) -> int | None:
+    """Infer Live2D generation from a config filename or resource filename."""
+    if not filename:
+        return None
+    base = os.path.basename(str(filename).replace('\\', '/')).lower()
+    if base.endswith('.model3.json') or base.endswith('.moc3'):
+        return 3
+    if base.endswith('.model.json') or base == 'model.json' or base.endswith('.moc'):
+        return 2
+    return None
+
+
+def detect_live2d_generation_from_data(data: dict | None, fallback_filename: str = "") -> int:
+    """Detect Live2D generation from model config JSON data.
+
+    Returns:
+        2 or 3. Defaults to 3 when uncertain.
+    """
+    if not isinstance(data, dict):
+        inferred = infer_live2d_generation_from_filename(fallback_filename)
+        return inferred if inferred in (2, 3) else 3
+
+    file_refs = data.get('FileReferences') or data.get('fileReferences')
+    if isinstance(file_refs, dict):
+        moc_value = file_refs.get('Moc') or file_refs.get('moc')
+        if isinstance(moc_value, str):
+            moc_lower = moc_value.lower()
+            if moc_lower.endswith('.moc3'):
+                return 3
+            if moc_lower.endswith('.moc'):
+                return 2
+        # Cubism 3 settings usually carry FileReferences.Moc
+        if 'Moc' in file_refs or 'moc' in file_refs:
+            return 3
+
+    model_value = data.get('model') or data.get('Model')
+    if isinstance(model_value, str):
+        model_lower = model_value.lower()
+        if model_lower.endswith('.moc3'):
+            return 3
+        if model_lower.endswith('.moc'):
+            return 2
+        # Legacy Cubism 2 often stores plain "model.moc" without extra metadata
+        return 2
+
+    inferred = infer_live2d_generation_from_filename(fallback_filename)
+    return inferred if inferred in (2, 3) else 3
+
+
+def detect_live2d_generation_from_config_path(config_path: str) -> int:
+    """Detect Live2D generation from a model config file path."""
+    inferred = infer_live2d_generation_from_filename(config_path)
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return detect_live2d_generation_from_data(data, config_path)
+    except Exception:
+        return inferred if inferred in (2, 3) else 3
+
+
+def _looks_like_live2d_model_config_data(data) -> bool:
+    if not isinstance(data, dict):
+        return False
+
+    file_refs = data.get('FileReferences') or data.get('fileReferences')
+    if isinstance(file_refs, dict):
+        moc = file_refs.get('Moc') or file_refs.get('moc')
+        textures = file_refs.get('Textures') or file_refs.get('textures')
+        if isinstance(moc, str) and isinstance(textures, list):
+            return True
+
+    model = data.get('model') or data.get('Model')
+    textures = data.get('textures') or data.get('Textures')
+    return isinstance(model, str) and isinstance(textures, list)
+
+
+def is_live2d_model_config_path(path: str) -> bool:
+    """Return True if *path* points to a JSON file that looks like Live2D model settings."""
+    if not path or not str(path).lower().endswith('.json'):
+        return False
+
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return _looks_like_live2d_model_config_data(json.load(f))
+    except Exception:
+        return False
+
+
+def is_supported_live2d_motion_file(filename: str) -> bool:
+    if not filename:
+        return False
+    return str(filename).lower().endswith(LIVE2D_MOTION_SUFFIXES)
+
+
+def is_supported_live2d_expression_file(filename: str) -> bool:
+    if not filename:
+        return False
+    return str(filename).lower().endswith(LIVE2D_EXPRESSION_SUFFIXES)
+
+
+def strip_live2d_model_config_suffix(filename: str) -> str:
+    """Strip known Live2D model config suffixes and return the basename stem."""
+    if not filename:
+        return ""
+
+    basename = os.path.basename(str(filename).replace('\\', '/'))
+    lower = basename.lower()
+    for suffix in (*LIVE2D_MODEL_CONFIG_SUFFIXES, '.json'):
+        if lower.endswith(suffix):
+            return basename[:-len(suffix)] or basename
+    return os.path.splitext(basename)[0]
+
+
+def strip_live2d_expression_suffix(filename: str) -> str:
+    """Strip known Live2D expression suffixes and return the basename stem."""
+    if not filename:
+        return ""
+
+    basename = os.path.basename(str(filename).replace('\\', '/'))
+    lower = basename.lower()
+    for suffix in LIVE2D_EXPRESSION_SUFFIXES:
+        if lower.endswith(suffix):
+            return basename[:-len(suffix)] or basename
+    return os.path.splitext(basename)[0]
+
+
+def select_preferred_live2d_model_config(files: list[str] | tuple[str, ...], directory: str | None = None) -> str | None:
+    """Pick the preferred model config from a directory listing."""
+    if not files:
+        return None
+
+    validation_cache: dict[str, bool] = {}
+
+    def _is_valid_candidate(file: str) -> bool:
+        if directory:
+            full_path = os.path.join(directory, file)
+            if not os.path.isfile(full_path):
+                return False
+            if file not in validation_cache:
+                validation_cache[file] = is_live2d_model_config_path(full_path)
+            return validation_cache[file]
+        return is_supported_live2d_model_config_file(file)
+
+    candidates = [
+        file for file in files
+        if str(file).lower().endswith('.json') and _is_valid_candidate(file)
+    ]
+    if not candidates:
+        return None
+
+    def _priority(file: str) -> tuple[int, str]:
+        lower = file.lower()
+        if lower.endswith('.model3.json'):
+            return (100, lower)
+        if lower.endswith('.model.json'):
+            return (90, lower)
+        if lower == 'model.json':
+            return (80, lower)
+        if lower == 'model.default.json' or lower.startswith('model.default.'):
+            return (70, lower)
+        if LIVE2D_MODEL_CONFIG_BASENAME_PATTERN.match(lower):
+            return (60, lower)
+        if lower == 'index.json':
+            return (50, lower)
+        if LIVE2D_MODEL_CONFIG_NUMERIC_PATTERN.match(lower):
+            return (40, lower)
+        return (10, lower)
+
+    return sorted(candidates, key=lambda file: (-_priority(file)[0], _priority(file)[1]))[0]
+
+
+def locate_live2d_model_config(model_dir: str) -> tuple[str | None, str | None, str | None]:
+    """
+    Probe *model_dir* and its single-level subdirectories for a supported
+    Live2D model config file.
+
+    Returns ``(actual_model_dir, model_config_file, subdir_name)`` on
+    success, or ``(None, None, None)`` when nothing is found.
+    """
+    if not os.path.isdir(model_dir):
+        return None, None, None
+
+    direct_file = select_preferred_live2d_model_config(os.listdir(model_dir), model_dir)
+    if direct_file:
+        return model_dir, direct_file, None
+
+    try:
+        for subdir in os.listdir(model_dir):
+            subdir_path = os.path.join(model_dir, subdir)
+            if not os.path.isdir(subdir_path):
+                continue
+
+            config_file = select_preferred_live2d_model_config(os.listdir(subdir_path), subdir_path)
+            if config_file:
+                return subdir_path, config_file, subdir
+    except Exception as e:
+        logging.warning(f"检查子目录时出错: {e}")
+
+    return None, None, None
+
+
 def find_models():
     """
     递归扫描 'static' 文件夹、用户文档下的 'live2d' 文件夹、Steam创意工坊目录和用户mod路径，
-    查找所有包含 '.model3.json' 文件的子目录。
+    查找所有包含 Live2D 模型配置文件（2/3代）的子目录。
     """
     from utils.config_manager import get_config_manager
     
@@ -224,51 +445,55 @@ def find_models():
         try:
             # os.walk会遍历指定的根目录下的所有文件夹和文件
             for root, dirs, files in os.walk(search_root_dir):
-                for file in files:
-                    if file.endswith('.model3.json'):
-                        # 获取模型名称 (使用其所在的文件夹名，更加直观)
-                        folder_name = os.path.basename(root)
-                        
-                        # 使用文件夹名作为模型名称和显示名称
-                        display_name = folder_name
-                        model_name = folder_name
-                        
-                        # 构建可被浏览器访问的URL路径
-                        # 1. 计算文件相对于 search_root_dir 的路径
-                        relative_path = os.path.relpath(os.path.join(root, file), search_root_dir)
-                        # 2. 将本地路径分隔符 (如'\\') 替换为URL分隔符 ('/')
-                        model_path = relative_path.replace(os.path.sep, '/')
-                        
-                        # 如果模型名称已存在，添加来源后缀以区分
-                        existing_names = [m["name"] for m in found_models]
-                        final_name = model_name
-                        if model_name in existing_names:
-                            final_name = f"{model_name}_{source}"
-                            # 如果加后缀后还是重复，再加个数字后缀
-                            counter = 1
-                            while final_name in existing_names:
-                                final_name = f"{model_name}_{source}_{counter}"
-                                counter += 1
-                            # 同时更新display_name以区分
-                            display_name = f"{display_name} ({source})"
-                        
-                        model_entry = {
-                            "name": final_name,
-                            "display_name": display_name,
-                            "path": f"{url_prefix}/{model_path}",
-                            "source": source
-                        }
-                        
-                        if source == 'workshop':
-                            path_parts = model_path.split('/')
-                            if path_parts and path_parts[0].isdigit():
-                                model_entry["item_id"] = path_parts[0]
-                        
-                        found_models.append(model_entry)
-                        
-                        # 优化：一旦在某个目录找到模型json，就无需再继续深入该目录的子目录
-                        dirs[:] = []
-                        break
+                model_config = select_preferred_live2d_model_config(files, root)
+                if not model_config:
+                    continue
+
+                # 获取模型名称 (使用其所在的文件夹名，更加直观)
+                folder_name = os.path.basename(root)
+
+                # 使用文件夹名作为模型名称和显示名称
+                display_name = folder_name
+                model_name = folder_name
+
+                # 构建可被浏览器访问的URL路径
+                # 1. 计算文件相对于 search_root_dir 的路径
+                relative_path = os.path.relpath(os.path.join(root, model_config), search_root_dir)
+                # 2. 将本地路径分隔符 (如'\\') 替换为URL分隔符 ('/')
+                model_path = relative_path.replace(os.path.sep, '/')
+                model_config_path = os.path.join(root, model_config)
+                generation = detect_live2d_generation_from_config_path(model_config_path)
+
+                # 如果模型名称已存在，添加来源后缀以区分
+                existing_names = [m["name"] for m in found_models]
+                final_name = model_name
+                if model_name in existing_names:
+                    final_name = f"{model_name}_{source}"
+                    # 如果加后缀后还是重复，再加个数字后缀
+                    counter = 1
+                    while final_name in existing_names:
+                        final_name = f"{model_name}_{source}_{counter}"
+                        counter += 1
+                    # 同时更新display_name以区分
+                    display_name = f"{display_name} ({source})"
+
+                model_entry = {
+                    "name": final_name,
+                    "display_name": display_name,
+                    "path": f"{url_prefix}/{model_path}",
+                    "source": source,
+                    "generation": generation,
+                }
+
+                if source == 'workshop':
+                    path_parts = model_path.split('/')
+                    if path_parts and path_parts[0].isdigit():
+                        model_entry["item_id"] = path_parts[0]
+
+                found_models.append(model_entry)
+
+                # 优化：一旦在某个目录找到模型json，就无需再继续深入该目录的子目录
+                dirs[:] = []
         except Exception as e:
             logging.error(f"搜索目录 {search_root_dir} 时出错: {e}")
                 
@@ -376,6 +601,26 @@ def _resolve_workshop_search_dir() -> str:
     return None
 
 
+def _find_named_model_dir(search_root: str, model_name: str) -> str | None:
+    """Recursively find a model directory whose basename matches *model_name*."""
+    if not search_root or not os.path.exists(search_root):
+        return None
+
+    search_root_real = os.path.realpath(search_root)
+    try:
+        for root, _, files in os.walk(search_root):
+            if os.path.basename(root) != model_name:
+                continue
+            if select_preferred_live2d_model_config(files, root) is None:
+                continue
+            root_real = os.path.realpath(root)
+            if _is_within(search_root_real, root_real):
+                return root
+    except Exception as e:
+        logging.warning(f"递归搜索模型目录 {model_name} 时出错: {e}")
+    return None
+
+
 def find_model_directory(model_name: str):
     """
     查找模型目录，优先在用户文档目录，其次在创意工坊目录，最后在static目录
@@ -416,6 +661,9 @@ def find_model_directory(model_name: str):
                 readable_live2d_real = os.path.realpath(readable_live2d)
                 if os.path.commonpath([readable_model_dir_real, readable_live2d_real]) == readable_live2d_real:
                     return (str(readable_model_dir), '/user_live2d')
+            nested_readable_model_dir = _find_named_model_dir(str(readable_live2d), model_name)
+            if nested_readable_model_dir:
+                return (nested_readable_model_dir, '/user_live2d')
     except Exception as e:
         logging.warning(f"检查原始文档目录模型时出错: {e}")
 
@@ -429,6 +677,9 @@ def find_model_directory(model_name: str):
             docs_live2d_dir_real = os.path.realpath(config_mgr.live2d_dir)
             if os.path.commonpath([docs_model_dir_real, docs_live2d_dir_real]) == docs_live2d_dir_real:
                 return (str(docs_model_dir), _live2d_url_prefix)
+        nested_docs_model_dir = _find_named_model_dir(str(config_mgr.live2d_dir), model_name)
+        if nested_docs_model_dir:
+            return (nested_docs_model_dir, _live2d_url_prefix)
     except Exception as e:
         logging.warning(f"检查文档目录模型时出错: {e}")
 
@@ -456,13 +707,12 @@ def find_model_directory(model_name: str):
                             return (potential_model_path, '/workshop')
                     
                     # 检查子文件夹本身是否就是模型目录（包含.model3.json文件）
-                    for file in os.listdir(item_path):
-                        if file.endswith('.model3.json'):
-                            # 提取模型名称（不带后缀）
-                            potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
-                            if potential_model_name == model_name:
-                                if os.path.commonpath([item_path_real, workshop_search_real]) == workshop_search_real:
-                                    return (item_path, '/workshop')
+                    config_file = select_preferred_live2d_model_config(os.listdir(item_path), item_path)
+                    if config_file:
+                        potential_model_name = strip_live2d_model_config_suffix(config_file)
+                        if potential_model_name == model_name:
+                            if os.path.commonpath([item_path_real, workshop_search_real]) == workshop_search_real:
+                                return (item_path, '/workshop')
     except Exception as e:
         logging.warning(f"检查创意工坊目录模型时出错: {e}")
     
@@ -492,13 +742,12 @@ def find_model_directory(model_name: str):
                             return (potential_model_path, '/user_mods')
                     
                     # 检查子文件夹本身是否就是模型目录（包含.model3.json文件）
-                    for file in os.listdir(mod_path):
-                        if file.endswith('.model3.json'):
-                            # 提取模型名称（不带后缀）
-                            potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
-                            if potential_model_name == model_name:
-                                if os.path.commonpath([mod_path_real, user_mods_path_real]) == user_mods_path_real:
-                                    return (mod_path, '/user_mods')
+                    config_file = select_preferred_live2d_model_config(os.listdir(mod_path), mod_path)
+                    if config_file:
+                        potential_model_name = strip_live2d_model_config_suffix(config_file)
+                        if potential_model_name == model_name:
+                            if os.path.commonpath([mod_path_real, user_mods_path_real]) == user_mods_path_real:
+                                return (mod_path, '/user_mods')
     except Exception as e:
         logging.warning(f"检查用户mod目录模型时出错: {e}")
     
@@ -510,6 +759,9 @@ def find_model_directory(model_name: str):
         static_model_dir_real = os.path.realpath(static_model_dir)
         if os.path.commonpath([static_model_dir_real, static_dir_real]) == static_dir_real:
             return (static_model_dir, '/static')
+    nested_static_model_dir = _find_named_model_dir(static_dir, model_name)
+    if nested_static_model_dir:
+        return (nested_static_model_dir, '/static')
     
     # 如果都不存在，返回None
     return (None, None)
@@ -536,8 +788,8 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
         # 直接使用物品ID作为文件夹名查找
         item_path = os.path.join(workshop_dir, item_id)
         if os.path.isdir(item_path):
-            # 检查是否包含.model3.json文件
-            has_model_file = any(file.endswith('.model3.json') for file in os.listdir(item_path))
+            # 检查是否包含 Live2D 模型配置文件
+            has_model_file = select_preferred_live2d_model_config(os.listdir(item_path), item_path) is not None
             if has_model_file:
                 return (item_path, '/workshop')
             
@@ -546,7 +798,7 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
                 subdir_path = os.path.join(item_path, subdir)
                 if os.path.isdir(subdir_path):
                     # 检查子文件夹中是否有模型文件
-                    if any(file.endswith('.model3.json') for file in os.listdir(subdir_path)):
+                    if select_preferred_live2d_model_config(os.listdir(subdir_path), subdir_path) is not None:
                         return (item_path, '/workshop')
         
         # 如果找不到匹配的文件夹，返回默认路径
@@ -578,20 +830,21 @@ def find_model_by_workshop_item_id(item_id: str) -> str:
         
         model_dir, url_prefix = item_result
         
-        # 查找.model3.json文件
+        # 查找支持的模型配置文件
         model_files = []
         for root, _, files in os.walk(model_dir):
-            for file in files:
-                if file.endswith('.model3.json'):
-                    # 计算相对路径
-                    relative_path = os.path.relpath(os.path.join(root, file), model_dir)
-                    model_files.append(os.path.normpath(relative_path).replace('\\', '/'))
+            config_file = select_preferred_live2d_model_config(files, root)
+            if config_file:
+                # 计算相对路径
+                relative_path = os.path.relpath(os.path.join(root, config_file), model_dir)
+                model_files.append(os.path.normpath(relative_path).replace('\\', '/'))
         
         if model_files:
             # 优先返回与文件夹同名的模型文件
             folder_name = os.path.basename(model_dir)
             for model_file in model_files:
-                if model_file.endswith(f"{folder_name}.model3.json"):
+                file_name = os.path.basename(model_file)
+                if strip_live2d_model_config_suffix(file_name) == folder_name:
                     return f"{url_prefix}/{item_id}/{model_file}"
             # 否则返回第一个找到的模型文件
             return f"{url_prefix}/{item_id}/{model_files[0]}"
@@ -605,22 +858,26 @@ def find_model_by_workshop_item_id(item_id: str) -> str:
 
 def find_model_config_file(model_name: str) -> str:
     """
-    在模型目录中查找.model3.json配置文件
+    在模型目录中查找支持的 Live2D 配置文件
     返回可访问的URL路径
     """
+    matching_model = next((model for model in find_models() if model.get('name') == model_name), None)
+    if matching_model and isinstance(matching_model.get('path'), str):
+        return matching_model['path']
+
     model_dir, url_prefix = find_model_directory(model_name)
     
     if not model_dir or not os.path.exists(model_dir):
         # 如果找不到模型目录，返回 None 或空字符串，而不是默认路径
         return None
     
-    # 查找.model3.json文件
-    for file in os.listdir(model_dir):
-        if file.endswith('.model3.json'):
-            return f"{url_prefix}/{model_name}/{file}"
-    
-    # 如果没找到，返回默认路径
-    return f"{url_prefix}/{model_name}/{model_name}.model3.json"
+    actual_model_dir, model_config_file, _subdir = locate_live2d_model_config(model_dir)
+    if not actual_model_dir or not model_config_file:
+        return None
+
+    relative_path = os.path.relpath(os.path.join(actual_model_dir, model_config_file), model_dir)
+    relative_path = relative_path.replace(os.path.sep, '/')
+    return f"{url_prefix}/{model_name}/{relative_path}"
 
 def get_timestamp():
     """Generate formatted timestamp like: Sunday, December 14, 2025 at 12:27 PM"""

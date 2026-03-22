@@ -348,6 +348,70 @@ class TestFindModelsCFA:
         assert '/user_live2d/' in normal_model['path']
         assert '/user_live2d_local/' not in normal_model['path']
 
+    def test_find_models_supports_cubism2_model_json(self, normal_env):
+        """find_models should discover legacy Cubism 2 model.json files."""
+        legacy_dir = normal_env["docs_live2d"] / "legacy_model"
+        legacy_dir.mkdir()
+        (legacy_dir / "model.json").write_text(
+            json.dumps({
+                "model": "legacy_model.moc",
+                "textures": ["tex_00.png"],
+                "motions": {"idle": [{"file": "motions/idle_01.mtn"}]},
+                "expressions": [{"name": "smile", "file": "exp/smile.exp.json"}],
+            }),
+            encoding="utf-8",
+        )
+
+        cm = _make_config_manager_normal(normal_env)
+        with patch('utils.config_manager.get_config_manager', return_value=cm):
+            from utils.frontend_utils import find_models, find_model_config_file
+            models = find_models()
+            model_url = find_model_config_file('legacy_model')
+
+        model_map = {m['name']: m for m in models}
+        assert 'legacy_model' in model_map, f"Legacy Cubism 2 model missing. Found: {list(model_map)}"
+        assert model_map['legacy_model']['path'].endswith('/legacy_model/model.json')
+        assert model_url.endswith('/legacy_model/model.json')
+
+    def test_find_models_supports_variant_cubism2_config_names(self, normal_env):
+        """find_models should discover Cubism 2 configs like model.default.json and nested index.json."""
+        variant_dir = normal_env["docs_live2d"] / "22"
+        variant_dir.mkdir()
+        (variant_dir / "model.default.json").write_text(
+            json.dumps({
+                "type": "Live2D Model Setting",
+                "model": "22.moc",
+                "textures": ["tex_00.png"],
+            }),
+            encoding="utf-8",
+        )
+
+        nested_dir = normal_env["docs_live2d"] / "HyperdimensionNeptunia" / "nepgearswim"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "index.json").write_text(
+            json.dumps({
+                "version": "Sample 1.0.0",
+                "model": "model.moc",
+                "textures": ["textures/00.png"],
+            }),
+            encoding="utf-8",
+        )
+
+        cm = _make_config_manager_normal(normal_env)
+        with patch('utils.config_manager.get_config_manager', return_value=cm):
+            from utils.frontend_utils import find_model_config_file, find_model_directory, find_models
+            models = find_models()
+            variant_url = find_model_config_file('22')
+            nested_url = find_model_config_file('nepgearswim')
+            nested_dir_result = find_model_directory('nepgearswim')
+
+        model_map = {m['name']: m for m in models}
+        assert model_map['22']['path'].endswith('/22/model.default.json')
+        assert model_map['nepgearswim']['path'].endswith('/HyperdimensionNeptunia/nepgearswim/index.json')
+        assert variant_url.endswith('/22/model.default.json')
+        assert nested_url.endswith('/HyperdimensionNeptunia/nepgearswim/index.json')
+        assert nested_dir_result[0].endswith('/HyperdimensionNeptunia/nepgearswim')
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # TEST GROUP 4: find_model_directory CFA Dual Search

@@ -96,13 +96,13 @@ def set_reserved(data: dict, *path_and_value) -> bool:
 
 
 def _legacy_live2d_to_model_path(legacy_live2d: str) -> str:
-    """将旧 live2d 目录名转为 model3 文件路径。"""
+    """将旧 live2d 目录名转为模型配置路径。"""
     if not legacy_live2d:
         return ""
     raw = str(legacy_live2d).strip().replace("\\", "/")
     if not raw:
         return ""
-    if raw.endswith(".model3.json"):
+    if raw.lower().endswith(".json"):
         return raw
     # COMPAT(v1->v2): 历史配置只有目录名（如 mao_pro），迁移时自动补全默认 model3 文件名。
     return f"{raw}/{raw}.model3.json"
@@ -115,13 +115,14 @@ def _legacy_live2d_name_from_model_path(model_path: str) -> str:
     raw = str(model_path).strip().replace("\\", "/")
     if not raw:
         return ""
-    if raw.endswith(".model3.json"):
+    if raw.lower().endswith(".json"):
         parent = raw.rsplit("/", 1)[0] if "/" in raw else ""
+        filename = raw.rsplit("/", 1)[-1]
         if parent:
             return parent.rsplit("/", 1)[-1]
-        filename = raw.rsplit("/", 1)[-1]
-        name = filename[:-len(".model3.json")]
-        return name
+        for suffix in (".model3.json", ".model.json", ".json"):
+            if filename.endswith(suffix):
+                return filename[:-len(suffix)] or filename
     return raw.rsplit("/", 1)[-1]
 
 
@@ -2197,4 +2198,3 @@ if __name__ == "__main__":
                 print(f"  {k}: {v}")
         else:
             print(f"{key}: {value}")
-

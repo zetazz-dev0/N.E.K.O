@@ -7,6 +7,109 @@
  * - 常驻表情管理（如设置和清除常驻表情）
  */
 
+function getCompatibleParameterCount(model) {
+    const internalModel = model && model.internalModel;
+    const coreModel = internalModel && internalModel.coreModel;
+
+    if (coreModel && typeof coreModel.getParameterCount === 'function') {
+        return coreModel.getParameterCount();
+    }
+
+    if (internalModel && typeof internalModel.getParameterCount === 'function') {
+        return internalModel.getParameterCount();
+    }
+
+    const modelParameters =
+        (internalModel && typeof internalModel.getModel === 'function' && internalModel.getModel() && internalModel.getModel().parameters) ||
+        (coreModel && typeof coreModel.getModel === 'function' && coreModel.getModel() && coreModel.getModel().parameters) ||
+        null;
+
+    if (modelParameters && modelParameters.values && typeof modelParameters.values.length === 'number') {
+        return modelParameters.values.length;
+    }
+
+    return 0;
+}
+
+function normalizeLive2DAssetKey(filePath) {
+    if (!filePath || typeof filePath !== 'string') return '';
+    return filePath.replace(/\\/g, '/').trim().toLowerCase();
+}
+
+function resolveMotionPlaybackTarget(manager, preferredGroup, preferredIndex, filePath) {
+    const targetKey = normalizeLive2DAssetKey(filePath);
+    const targetBase = targetKey.split('/').pop() || '';
+    const sources = [];
+    const definitions = manager?.currentModel?.internalModel?.motionManager?.definitions;
+    if (definitions && typeof definitions === 'object') sources.push(definitions);
+    if (manager?.fileReferences?.Motions && typeof manager.fileReferences.Motions === 'object') {
+        sources.push(manager.fileReferences.Motions);
+    }
+
+    const groupMatchesEmotion = (groupName) =>
+        String(groupName || '').toLowerCase() === String(preferredGroup || '').toLowerCase();
+
+    for (const source of sources) {
+        for (const [groupName, list] of Object.entries(source)) {
+            if (!Array.isArray(list)) continue;
+            for (let index = 0; index < list.length; index++) {
+                const entry = list[index];
+                const entryFile = typeof entry === 'string'
+                    ? entry
+                    : (entry && (entry.File || entry.file));
+                if (!entryFile) continue;
+                const entryKey = normalizeLive2DAssetKey(entryFile);
+                const entryBase = entryKey.split('/').pop() || '';
+                if ((targetKey && entryKey === targetKey) || (targetBase && entryBase === targetBase)) {
+                    return { group: groupName, index, file: entryFile };
+                }
+            }
+        }
+    }
+
+    for (const source of sources) {
+        const groupName = Object.keys(source).find(groupMatchesEmotion);
+        if (!groupName) continue;
+        const list = Array.isArray(source[groupName]) ? source[groupName] : [];
+        let fallbackIndex = Number.isFinite(preferredIndex) ? preferredIndex : 0;
+        if (!Number.isFinite(fallbackIndex) || fallbackIndex < 0) fallbackIndex = 0;
+        if (list.length > 0 && fallbackIndex >= list.length) fallbackIndex = list.length - 1;
+        return { group: groupName, index: Math.max(0, fallbackIndex), file: null };
+    }
+
+    for (const source of sources) {
+        const firstGroup = Object.keys(source).find((group) => Array.isArray(source[group]) && source[group].length > 0);
+        if (firstGroup) return { group: firstGroup, index: 0, file: null };
+    }
+
+    return { group: preferredGroup, index: Number.isFinite(preferredIndex) ? preferredIndex : 0, file: null };
+}
+
+function collectAllMotionCandidates(manager) {
+    const out = [];
+    const dedup = new Set();
+    const appendFromSource = (source) => {
+        if (!source || typeof source !== 'object') return;
+        for (const [groupName, list] of Object.entries(source)) {
+            if (!Array.isArray(list)) continue;
+            list.forEach((entry, index) => {
+                const filePath = typeof entry === 'string'
+                    ? entry
+                    : (entry && (entry.File || entry.file));
+                if (!filePath) return;
+                const key = `${String(groupName)}::${String(index)}::${normalizeLive2DAssetKey(filePath)}`;
+                if (dedup.has(key)) return;
+                dedup.add(key);
+                out.push({ group: groupName, index, File: filePath });
+            });
+        }
+    };
+
+    appendFromSource(manager?.fileReferences?.Motions);
+    appendFromSource(manager?.currentModel?.internalModel?.motionManager?.definitions);
+    return out;
+}
+
 // 记录模型的初始参数（用于expression重置，跳过位置参数）
 Live2DManager.prototype.recordInitialParameters = function() {
     if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
@@ -18,7 +121,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
         const coreModel = this.currentModel.internalModel.coreModel;
         this.initialParameters = {};
         
-        const paramCount = coreModel.getParameterCount();
+        const paramCount = getCompatibleParameterCount(this.currentModel);
         console.log(`开始记录${paramCount}个初始参数...`);
         
         // 创建可折叠的详细日志组（默认折叠状态）
@@ -204,7 +307,7 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
             }
 
             const cm = self.currentModel.internalModel.coreModel;
-            const paramCount = cm.getParameterCount();
+            const paramCount = getCompatibleParameterCount(self.currentModel);
 
             // ── Phase 0：采集含表情的参数快照 ──
             if (phase === 0) {
@@ -425,6 +528,16 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
             expressionFiles = candidates.map(e => e.File).filter(Boolean);
         }
 
+        // 兜底：情感组没有命中时，回退到当前模型所有 expression 中随机一个
+        if ((!expressionFiles || expressionFiles.length === 0) && this.fileReferences && Array.isArray(this.fileReferences.Expressions)) {
+            expressionFiles = this.fileReferences.Expressions
+                .map((e) => e && e.File)
+                .filter(Boolean);
+            if (expressionFiles.length > 0) {
+                console.log(`情感 ${emotion} 未命中专属表情，回退到全量 expression 随机策略`);
+            }
+        }
+
         if (!expressionFiles || expressionFiles.length === 0) {
             console.log(`未找到情感 ${emotion} 对应的表情，将跳过表情播放`);
             return;
@@ -450,6 +563,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         : null;
     const resolvedExpressionName = resolvedRef && resolvedRef.name ? resolvedRef.name : null;
     const canonicalChoiceFile = resolvedRef && resolvedRef.file ? resolvedRef.file : choiceFile;
+    const isCubism2 = this.getModelGeneration && this.getModelGeneration() === 2;
     
     try {
         // 构造候选表达文件路径：优先 canonical，其次同名 FileReferences，再尝试 expressions/ 前缀
@@ -508,6 +622,24 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         // 方法1: 尝试使用原生expression API
         if (this.currentModel.expression) {
             try {
+                if (isCubism2 && this.fileReferences && Array.isArray(this.fileReferences.Expressions)) {
+                    const normalizedLoadedFile = String(loadedExpressionFile || '').replace(/\\/g, '/').toLowerCase();
+                    const loadedBase = normalizedLoadedFile.split('/').pop() || '';
+                    const expressionIndex = this.fileReferences.Expressions.findIndex((item) => {
+                        if (!item || !item.File) return false;
+                        const normalizedRefFile = String(item.File).replace(/\\/g, '/').toLowerCase();
+                        return normalizedRefFile === normalizedLoadedFile || normalizedRefFile.split('/').pop() === loadedBase;
+                    });
+                    if (expressionIndex >= 0) {
+                        console.log(`尝试使用 Cubism2 索引播放 expression: ${expressionIndex}`);
+                        const expressionByIndex = await this.currentModel.expression(expressionIndex);
+                        if (expressionByIndex) {
+                            console.log(`成功使用 Cubism2 索引播放 expression: ${expressionIndex}`);
+                            return;
+                        }
+                    }
+                }
+
                 const expressionName = resolvedExpressionName || ((typeof this.resolveExpressionNameByFile === 'function')
                     ? this.resolveExpressionNameByFile(canonicalChoiceFile)
                     : null);
@@ -518,7 +650,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
                 }
 
                 // 一些工坊模型会把 Name/映射写成 *.exp3.json，底层会将其当文件路径并错误拼接，故直接回退手动参数应用
-                const nameLooksLikeFile = /\.exp3\.json$/i.test(expressionName) || expressionName.includes('/');
+                const nameLooksLikeFile = /\.(exp3|exp)\.json$/i.test(expressionName) || expressionName.includes('/');
                 if (nameLooksLikeFile) {
                     console.warn(`表情名疑似文件路径，跳过原生API避免404: ${expressionName}`);
                     throw new Error('Expression name appears to be a file path');
@@ -565,11 +697,23 @@ Live2DManager.prototype.playMotion = async function(emotion) {
     // 优先使用 Cubism 原生 Motion Group（FileReferences.Motions）
     // 格式: { emotion: [{ File: "motions/xxx.motion3.json" }, ...] }
     let motions = null;
-    if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
-        motions = this.fileReferences.Motions[emotion]; // 形如 [{ File: "motions/xxx.motion3.json" }, ...]
-    } else if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
+    const findMotionsByEmotion = (motionSource, emotionName) => {
+        if (!motionSource || typeof motionSource !== 'object') return null;
+        if (Array.isArray(motionSource[emotionName])) return motionSource[emotionName];
+        const matchedKey = Object.keys(motionSource).find(
+            (key) => String(key).toLowerCase() === String(emotionName).toLowerCase()
+        );
+        return matchedKey ? motionSource[matchedKey] : null;
+    };
+
+    motions = findMotionsByEmotion(this.fileReferences && this.fileReferences.Motions, emotion);
+    if (motions) {
+        // 形如 [{ File: "motions/xxx.motion3.json" }, ...]
+    } else {
+        const mappedMotions = findMotionsByEmotion(this.emotionMapping && this.emotionMapping.motions, emotion);
+        if (mappedMotions) {
         // 兼容 EmotionMapping.motions: { emotion: ["motions/xxx.motion3.json", ...] }
-        const emotionMotions = this.emotionMapping.motions[emotion];
+        const emotionMotions = mappedMotions;
         if (Array.isArray(emotionMotions) && emotionMotions.length > 0) {
             // 检查是否已经是对象格式还是字符串格式
             if (typeof emotionMotions[0] === 'string') {
@@ -579,16 +723,28 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                 motions = emotionMotions;
             }
         }
+        }
     }
 
     if (!motions || motions.length === 0) {
-        console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
-        // 如果没有找到对应的motion，设置一个短定时器以确保expression能够显示
-        // 并且不设置回调来清除效果，让表情一直持续
-        this.motionTimer = setTimeout(() => {
-            this.motionTimer = null;
-        }, 500); // 500ms应该足够让expression稳定显示
-        return;
+        const fallbackCandidates = collectAllMotionCandidates(this);
+        if (fallbackCandidates.length > 0) {
+            const pickedFallback = this.getRandomElement(fallbackCandidates);
+            motions = [{
+                File: pickedFallback.File,
+                __resolvedGroup: pickedFallback.group,
+                __resolvedIndex: pickedFallback.index
+            }];
+            console.log(`未找到情感 ${emotion} 对应动作，回退到全量动作随机策略: ${pickedFallback.group}[${pickedFallback.index}]`);
+        } else {
+            console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
+            // 如果没有找到对应的motion，设置一个短定时器以确保expression能够显示
+            // 并且不设置回调来清除效果，让表情一直持续
+            this.motionTimer = setTimeout(() => {
+                this.motionTimer = null;
+            }, 500); // 500ms应该足够让expression稳定显示
+            return;
+        }
     }
 
     const choice = this.getRandomElement(motions);
@@ -597,6 +753,18 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         this.playSimpleMotion(emotion);
         return;
     }
+    const isCubism2 = this.getModelGeneration && this.getModelGeneration() === 2;
+    const motionIndexInGroup = Math.max(
+        0,
+        motions.findIndex(item => item && item.File === choice.File)
+    );
+    const resolvedMotionTarget = choice.__resolvedGroup
+        ? {
+            group: choice.__resolvedGroup,
+            index: Number.isFinite(choice.__resolvedIndex) ? choice.__resolvedIndex : 0,
+            file: choice.File || null
+        }
+        : resolveMotionPlaybackTarget(this, emotion, motionIndexInGroup, choice.File);
 
     try {
         // 清除之前的动作定时器
@@ -632,15 +800,28 @@ Live2DManager.prototype.playMotion = async function(emotion) {
             // 使用模型的原生motion播放功能
             if (this.currentModel.motion) {
                 try {
+                    const playGroup = resolvedMotionTarget.group || emotion;
+                    const playIndex = Number.isFinite(resolvedMotionTarget.index) ? resolvedMotionTarget.index : 0;
                     console.log(`尝试播放motion: ${choice.File}`);
+                    console.log(`尝试使用动作组播放motion: ${playGroup}, index=${playIndex}, strategy=Cubism${isCubism2 ? 2 : 3}`);
 
-                    // 使用情感名称作为motion组名，这样可以确保播放正确的motion
-                    console.log(`尝试使用情感组播放motion: ${emotion}`);
-
-                    const motion = await this.currentModel.motion(emotion);
+                    let motion = await this.currentModel.motion(playGroup, playIndex, 3);
+                    if (!motion) {
+                        motion = await this.currentModel.motion(playGroup, playIndex);
+                    }
+                    if (!motion) {
+                        motion = await this.currentModel.motion(playGroup);
+                    }
+                    if (!motion) {
+                        // 最后再尝试原 emotion 键，兼容历史配置
+                        motion = await this.currentModel.motion(emotion, motionIndexInGroup, 3);
+                    }
+                    if (!motion) {
+                        motion = await this.currentModel.motion(emotion);
+                    }
 
                     if (motion) {
-                        console.log(`成功开始播放motion（情感组: ${emotion}，预期文件: ${choice.File}）`);
+                        console.log(`成功开始播放motion（动作组: ${playGroup}，预期文件: ${choice.File}）`);
 
                         // 获取motion的实际持续时间
                         let motionDuration = 5000; // 默认5秒
@@ -758,6 +939,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
 // 清理当前情感效果（清除motion参数，但保留expression）
 Live2DManager.prototype.clearEmotionEffects = function() {
     let hasCleared = false;
+    const isCubism2 = this.getModelGeneration && this.getModelGeneration() === 2;
     
     console.log('开始清理motion效果（保留expression）...');
     
@@ -802,8 +984,9 @@ Live2DManager.prototype.clearEmotionEffects = function() {
         }
     }
     
-    // 只重置明显的motion相关参数，保留expression相关参数
-    if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
+    // 只重置明显的motion相关参数，保留expression相关参数。
+    // Cubism2 下跳过参数硬复位，避免把 expression/focus 一并抹掉。
+    if (!isCubism2 && this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
         try {
             const coreModel = this.currentModel.internalModel.coreModel;
             
@@ -830,6 +1013,8 @@ Live2DManager.prototype.clearEmotionEffects = function() {
         } catch (paramError) {
             console.warn('重置motion参数失败:', paramError);
         }
+    } else if (isCubism2) {
+        console.log('Cubism2 模型：跳过 motion 参数硬复位，仅停止 motion 播放');
     }
     
     // 重新应用常驻表情（保护常驻expression不被影响）
@@ -840,7 +1025,7 @@ Live2DManager.prototype.clearEmotionEffects = function() {
         console.warn('重新应用常驻表情失败:', e);
     }
     
-    console.log('motion效果清理完成，motion参数已重置，expression参数已保留');
+    console.log(`motion效果清理完成，${isCubism2 ? '未执行参数硬复位（Cubism2）' : 'motion参数已重置'}，expression参数已保留`);
 };
 
 // 设置情感并播放对应的表情和动作
@@ -1009,7 +1194,7 @@ Live2DManager.prototype.setupPersistentExpressions = async function() {
                 const data = await resp.json();
                 const params = Array.isArray(data.Parameters) ? data.Parameters : [];
                 const base = String(file).split('/').pop() || '';
-                const name = base.replace('.exp3.json', '');
+                const name = this.stripExpressionFileExtension(base);
                 // 只有包含参数的表达才加入播放队列
                 if (params.length > 0) {
                     this.persistentExpressionNames.push(name);
@@ -1150,4 +1335,3 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBa
         }
     }
 };
-

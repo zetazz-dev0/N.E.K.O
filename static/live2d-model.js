@@ -17,6 +17,9 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     
     // 设置加载锁
     this._isLoadingModel = true;
+    if (typeof this.setModelGeneration === 'function') {
+        this.setModelGeneration(null);
+    }
     const loadToken = ++this._activeLoadToken;
     this._modelLoadState = 'preparing';
     this._isModelReadyForInteraction = false;
@@ -390,9 +393,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (!this._isLoadTokenActive(loadToken)) return;
     this._modelLoadState = 'applying';
 
+    let urlString = null;
+    let parsedSettings = null;
+
     // 解析模型目录名与根路径，供资源解析使用
     try {
-        let urlString = null;
         if (typeof modelPath === 'string') {
             urlString = modelPath;
         } else if (modelPath && typeof modelPath === 'object' && typeof modelPath.url === 'string') {
@@ -416,6 +421,28 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         console.warn('解析模型根路径失败，将使用默认值', e);
         this.modelRootPath = '/static';
         this.modelName = null;
+    }
+
+    try {
+        const settingsObject = model.internalModel && model.internalModel.settings;
+        parsedSettings = settingsObject && settingsObject.json ? settingsObject.json : settingsObject;
+        const providedGeneration = Number(options && options.generation);
+        const resolvedGeneration = providedGeneration === 2 || providedGeneration === 3
+            ? providedGeneration
+            : this.detectModelGeneration(parsedSettings, urlString || modelPath);
+        if (typeof this.setModelGeneration === 'function') {
+            this.setModelGeneration(resolvedGeneration);
+        } else {
+            this.modelGeneration = resolvedGeneration;
+        }
+        console.log(`[Live2D] 使用模型分代策略: Cubism ${resolvedGeneration}`);
+    } catch (e) {
+        console.warn('[Live2D] 检测模型分代失败，默认按 Cubism 3 处理:', e);
+        if (typeof this.setModelGeneration === 'function') {
+            this.setModelGeneration(3);
+        } else {
+            this.modelGeneration = 3;
+        }
     }
 
     // 配置渲染纹理数量以支持更多蒙版
@@ -483,9 +510,33 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         
         if (fixedCount > 0) {
             delete hitAreas_do[''];
-            
+
+            const resolveDrawableIndex = (hitAreaId) => {
+                const internalModel = model.internalModel;
+                const coreModel = internalModel && internalModel.coreModel;
+
+                if (internalModel && typeof internalModel.getDrawableIndex === 'function') {
+                    return internalModel.getDrawableIndex(hitAreaId);
+                }
+
+                if (coreModel && typeof coreModel.getDrawableIndex === 'function') {
+                    return coreModel.getDrawableIndex(hitAreaId);
+                }
+
+                if (coreModel && typeof coreModel.getDrawDataIndex === 'function') {
+                    return coreModel.getDrawDataIndex(hitAreaId);
+                }
+
+                return -1;
+            };
+
             hitAreas_disk.forEach(hitArea => {
-                const drawableIndex = model.internalModel.coreModel.getDrawableIndex(hitArea.Id);
+                const drawableIndex = resolveDrawableIndex(hitArea.Id);
+
+                if (typeof drawableIndex !== 'number' || drawableIndex < 0) {
+                    return;
+                }
+
                 hitAreas_do[hitArea.Id] = {
                     id: hitArea.Id,
                     name: hitArea.Id,
@@ -525,10 +576,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
 
     // 加载 FileReferences 与 EmotionMapping
     if (options.loadEmotionMapping !== false) {
-        const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
+        const settings = parsedSettings;
         if (settings) {
-            // 保存原始 FileReferences
-            this.fileReferences = settings.FileReferences || null;
+            const isCubism2Strategy = this.modelGeneration === 2;
+            // 统一规范成 FileReferences 结构，兼容 Cubism 2/3
+            this.fileReferences = this.buildNormalizedFileReferences(settings);
 
             // 从服务器 API 获取经过验证的表情/动作文件路径
             // model_manager 页面在加载前已手动注入；此处为 index 等其他页面补齐相同逻辑
@@ -546,20 +598,32 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
                     if (filesResp.ok) {
                         const filesData = await filesResp.json();
                         if (filesData.success !== false && Array.isArray(filesData.expression_files)) {
-                            if (!this.fileReferences) this.fileReferences = {};
+                            if (!this.fileReferences) this.fileReferences = { Motions: {}, Expressions: [] };
                             this.fileReferences.Expressions = filesData.expression_files.map(file => ({
-                                Name: file.split('/').pop().replace('.exp3.json', ''),
+                                Name: this.stripExpressionFileExtension(file),
                                 File: file
                             }));
+                            if (isCubism2Strategy) {
+                                settings.expressions = filesData.expression_files.map(file => ({
+                                    name: this.stripExpressionFileExtension(file),
+                                    file
+                                }));
+                            }
                             verifiedExpressionBasenames = new Set(
                                 filesData.expression_files.map(f => f.split('/').pop().toLowerCase())
                             );
                             console.log('已从服务器更新表情文件引用:', this.fileReferences.Expressions.length, '个表情');
                         }
                         if (filesData.success !== false && Array.isArray(filesData.motion_files)) {
-                            if (!this.fileReferences) this.fileReferences = {};
+                            if (!this.fileReferences) this.fileReferences = { Motions: {}, Expressions: [] };
                             if (!this.fileReferences.Motions) this.fileReferences.Motions = {};
                             this.fileReferences.Motions.PreviewAll = filesData.motion_files.map(file => ({ File: file }));
+                            if (isCubism2Strategy) {
+                                if (!settings.motions || typeof settings.motions !== 'object' || Array.isArray(settings.motions)) {
+                                    settings.motions = {};
+                                }
+                                settings.motions.PreviewAll = filesData.motion_files.map(file => ({ file }));
+                            }
                         }
                     }
                 }
@@ -677,12 +741,21 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 检测是否有 Idle 情绪配置（兼容新旧两种格式）
     // - 新格式: EmotionMapping.motions['Idle'] / EmotionMapping.expressions['Idle']
     // - 旧格式: FileReferences.Motions['Idle'] / FileReferences.Expressions 中的 Idle 前缀
-    const hasIdleInEmotionMapping = this.emotionMapping && 
-        (this.emotionMapping.motions?.['Idle'] || this.emotionMapping.expressions?.['Idle']);
-    const hasIdleInFileReferences = this.fileReferences && 
-        (this.fileReferences.Motions?.['Idle'] || 
-         (Array.isArray(this.fileReferences.Expressions) && 
-          this.fileReferences.Expressions.some(e => (e.Name || '').startsWith('Idle'))));
+    const findIdleKey = (obj) => {
+        if (!obj || typeof obj !== 'object') return null;
+        return Object.keys(obj).find((key) => String(key).toLowerCase() === 'idle') || null;
+    };
+    const idleKeyInEmotionMotions = findIdleKey(this.emotionMapping && this.emotionMapping.motions);
+    const idleKeyInEmotionExpressions = findIdleKey(this.emotionMapping && this.emotionMapping.expressions);
+    const idleKeyInFileRefs = findIdleKey(this.fileReferences && this.fileReferences.Motions);
+    const hasIdleInEmotionMapping = !!(idleKeyInEmotionMotions || idleKeyInEmotionExpressions);
+    const hasIdleInFileReferences = !!(
+        idleKeyInFileRefs ||
+        (this.fileReferences &&
+            Array.isArray(this.fileReferences.Expressions) &&
+            this.fileReferences.Expressions.some((e) => String(e && e.Name || '').toLowerCase().startsWith('idle')))
+    );
+    const idleEmotionKey = idleKeyInEmotionMotions || idleKeyInEmotionExpressions || idleKeyInFileRefs || 'Idle';
     // 注意：Idle 情绪播放已移至模型淡入完成后触发，
     // 避免在加载过程中独立 setTimeout 可能导致的变形/抖动
 
@@ -746,8 +819,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 模型完全可见后播放 Idle 情绪（替代原来的独立 setTimeout）
     if (hasIdleInEmotionMapping || hasIdleInFileReferences) {
         try {
-            console.log('[Live2D Model] 模型淡入完成，开始播放Idle情绪');
-            this.setEmotion('Idle').catch(error => {
+            console.log(`[Live2D Model] 模型淡入完成，开始播放Idle情绪: ${idleEmotionKey}`);
+            this.setEmotion(idleEmotionKey).catch(error => {
                 console.warn('[Live2D Model] 播放Idle情绪失败:', error);
             });
         } catch (error) {
@@ -913,6 +986,40 @@ Live2DManager.prototype.installMouthOverride = function() {
         } catch (_) {}
     }
     console.log('[Live2D MouthOverride] 找到的口型参数:', Object.keys(mouthParamIndices).join(', ') || '无');
+
+    // Cubism2 使用轻量口型 ticker，避免覆盖 motion/expression 管线。
+    const isCubism2 = this.getModelGeneration && this.getModelGeneration() === 2;
+    if (isCubism2) {
+        if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
+            try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
+            this._mouthTicker = null;
+        }
+
+        const mouthIndexEntries = Object.entries(mouthParamIndices).filter(([id]) => id !== 'ParamMouthForm');
+        this._mouthTicker = () => {
+            const activeCoreModel = this.currentModel &&
+                this.currentModel.internalModel &&
+                this.currentModel.internalModel.coreModel;
+            if (!activeCoreModel) return;
+            for (const [, idx] of mouthIndexEntries) {
+                try {
+                    activeCoreModel.setParameterValueByIndex(idx, this.mouthValue);
+                } catch (_) {}
+            }
+        };
+
+        if (this.pixi_app && this.pixi_app.ticker) {
+            this.pixi_app.ticker.add(this._mouthTicker);
+        }
+
+        this._mouthOverrideInstalled = false;
+        this._origMotionManagerUpdate = null;
+        this._origCoreModelUpdate = null;
+        this._coreModelRef = null;
+        this._reinstallAttempts = 0;
+        console.log('[Live2D MouthOverride] Cubism2 使用轻量口型 ticker 模式');
+        return;
+    }
     
     // 覆盖 1: motionManager.update - 在动作更新后立即覆盖参数
     if (internalModel.motionManager && typeof internalModel.motionManager.update === 'function') {
